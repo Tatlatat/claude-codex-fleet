@@ -1387,7 +1387,8 @@ class Handler(BaseHTTPRequestHandler):
                     # stream=true and died silently at 180s on the old blocking blob
                     # path. The Claude Code client parses the SSE stream fine even
                     # when it did not request stream=true.
-                    if config.get("provider") == "codex_cli":
+                    provider = config.get("provider")
+                    if provider in ("codex_cli", "reasonix_cli"):
                         self.send_sse_response_lazy(
                             lambda: call_openai_compatible(payload, model, config),
                             model,
