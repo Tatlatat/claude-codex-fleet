@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "ultracode": false,
+  "workflowKeywordTriggerEnabled": true,
+  "permissions": {
+    "allow": [
+      "mcp__codex_fleet__run_codex_worker",
+      "mcp__codex_fleet__run_codex_fleet",
+      "mcp__codex_fleet__fleet_status"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Workflow",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env python3 /Users/tatlatat/.claude/codex-fleet/hooks/codex-workflow.py",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/usr/bin/env python3 /Users/tatlatat/.claude/codex-fleet/hooks/only-codex-fleet.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

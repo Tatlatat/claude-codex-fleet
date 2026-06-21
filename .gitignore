@@ -1,0 +1,11 @@
+runtime/
+logs/
+data/
+state/
+__pycache__/
+*.pyc
+config.yml
+.env
+*.port
+docs/specs/*.tmp
+.superpowers/
