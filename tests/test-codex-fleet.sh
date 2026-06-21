@@ -1493,7 +1493,7 @@ python3 "$ROOT/tests/test-reasonix-cost-ledger.py" || fail "reasonix cost ledger
 
 # Hook flavor-awareness: reasonix flavor must NOT block the native Agent tool
 # (so subagents route to reasonix, not the codex_fleet MCP); codex flavor still blocks.
-echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=reasonix python3 "$ROOT/hooks/only-codex-fleet.py" >/dev/null 2>&1 || fail "reasonix flavor must NOT block the Agent tool"
+echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=reasonix python3 "$ROOT/hooks/only-codex-fleet.py" >/dev/null 2>&1 && fail "reasonix flavor must STILL block Agent (push to reasonix MCP, not native which hangs)"
 echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=codex CLAUDE_CODEX_NATIVE_SUBAGENTS=0 python3 "$ROOT/hooks/only-codex-fleet.py" >/dev/null 2>&1 && fail "codex flavor must still block the Agent tool"
 echo "PASS: only-codex-fleet flavor-aware"
 
