@@ -1467,6 +1467,7 @@ LAUNCHER_BIN="$HOME/.local/bin/claude-codex"
 [[ -f "$LAUNCHER_BIN" ]] || fail "launcher not found at $LAUNCHER_BIN"
 grep -Eq 'claude-reasonix\)\s*CLAUDE_CODEX_FLAVOR="?reasonix"?' "$LAUNCHER_BIN" || fail "launcher must map claude-reasonix name to CLAUDE_CODEX_FLAVOR=reasonix"
 grep -q 'claude-reasonix-flash' "$LAUNCHER_BIN" || fail "launcher reasonix flavor must force claude-reasonix-flash"
+grep -q "REASONIX_BIN" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must export REASONIX_BIN (gateway needs reasonix+node on PATH)"
 [[ -L "$HOME/.local/bin/claude-reasonix" ]] || fail "claude-reasonix must be a symlink"
 
 CLAUDE_CODEX_FLAVOR=reasonix python3 - "$GATEWAY" <<'PY' || fail "reasonix flavor must expose claude-reasonix-flash"
