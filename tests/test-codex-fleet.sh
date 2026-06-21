@@ -1451,6 +1451,13 @@ python3 "$ROOT/tests/test-gateway-nonstream-heartbeat.py" || fail "gateway non-s
 
 python3 "$ROOT/tests/test-ccr-proxy-streaming.py" || fail "ccr-proxy SSE streaming regression"
 
+# Verify the launcher itself wires the reasonix flavor via basename/$0 detection
+LAUNCHER_BIN="$HOME/.local/bin/claude-codex"
+[[ -f "$LAUNCHER_BIN" ]] || fail "launcher not found at $LAUNCHER_BIN"
+grep -Eq 'claude-reasonix\)\s*CLAUDE_CODEX_FLAVOR="?reasonix"?' "$LAUNCHER_BIN" || fail "launcher must map claude-reasonix name to CLAUDE_CODEX_FLAVOR=reasonix"
+grep -q 'claude-reasonix-flash' "$LAUNCHER_BIN" || fail "launcher reasonix flavor must force claude-reasonix-flash"
+[[ -L "$HOME/.local/bin/claude-reasonix" ]] || fail "claude-reasonix must be a symlink"
+
 CLAUDE_CODEX_FLAVOR=reasonix python3 - "$GATEWAY" <<'PY' || fail "reasonix flavor must expose claude-reasonix-flash"
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])
