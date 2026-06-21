@@ -104,6 +104,12 @@ def model_registry() -> dict[str, JSON]:
             "api_key": env_first("CLAUDE_CODEX_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
             "max_tokens_param": os.getenv("CLAUDE_CODEX_DEEPSEEK_MAX_TOKENS_PARAM", "max_tokens"),
         },
+        "claude-reasonix-flash": {
+            "display_name": os.getenv("CLAUDE_CODEX_REASONIX_DISPLAY_NAME", "claude-reasonix-flash"),
+            "provider": "reasonix_cli",
+            "target_model": env_first("CLAUDE_CODEX_REASONIX_MODEL", default="deepseek-v4-flash"),
+            "reasonix_bin": env_first("REASONIX_BIN", default="reasonix"),
+        },
     }
 
 
@@ -400,6 +406,14 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
             "stop_sequence": None,
             "usage": usage,
         }
+
+    if config.get("provider") == "reasonix_cli":
+        messages = anthropic_messages_to_openai(payload)
+        prompt = openai_messages_to_prompt(messages, payload.get("tools"))
+        text, usage = run_reasonix_acp(prompt, config)
+        gateway_trace("reasonix_acp_response", model=requested_model,
+                      cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
+        return anthropic_end_turn_response(requested_model, usage, text=text)
 
     api_key = str(config.get("api_key") or "")
     if not api_key:

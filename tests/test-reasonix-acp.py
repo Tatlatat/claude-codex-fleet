@@ -61,9 +61,21 @@ def test_spawn_failure_raises_gatewayerror():
         raise SystemExit(f"FAIL: expected GatewayError, got {type(e).__name__}: {e}")
     raise SystemExit("FAIL: no exception raised — expected GatewayError")
 
+def test_registry_has_reasonix_flash():
+    os.environ["CLAUDE_CODEX_FLAVOR"] = "reasonix"
+    try:
+        reg = gw.model_registry()
+        expect("claude-reasonix-flash" in reg, f"registry missing claude-reasonix-flash: {list(reg)}")
+        cfg = reg["claude-reasonix-flash"]
+        expect(cfg.get("provider") == "reasonix_cli", f"wrong provider: {cfg}")
+        expect(cfg.get("target_model") == "deepseek-v4-flash", f"wrong model: {cfg}")
+    finally:
+        os.environ.pop("CLAUDE_CODEX_FLAVOR", None)
+
 def main():
     test_accumulates_text_and_cost()
     test_spawn_failure_raises_gatewayerror()
+    test_registry_has_reasonix_flash()
     print("PASS: reasonix acp driver")
     return 0
 
