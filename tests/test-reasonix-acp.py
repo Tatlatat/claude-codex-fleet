@@ -49,8 +49,21 @@ def test_accumulates_text_and_cost():
     expect(usage.get("reasonix_cost_usd") == 0.000123, f"cost not captured: {usage}")
     expect(usage.get("reasonix_cache_pct") == 90.0, f"cache pct not captured: {usage}")
 
+def test_spawn_failure_raises_gatewayerror():
+    cfg = {"reasonix_bin": "/nonexistent/reasonix-binary-xyz", "target_model": "deepseek-v4-flash"}
+    try:
+        gw.run_reasonix_acp("hi", cfg)
+    except gw.GatewayError as e:
+        expect(e.error_type == "reasonix_acp_error",
+               f"wrong error_type: {e.error_type!r}")
+        return
+    except Exception as e:
+        raise SystemExit(f"FAIL: expected GatewayError, got {type(e).__name__}: {e}")
+    raise SystemExit("FAIL: no exception raised — expected GatewayError")
+
 def main():
     test_accumulates_text_and_cost()
+    test_spawn_failure_raises_gatewayerror()
     print("PASS: reasonix acp driver")
     return 0
 

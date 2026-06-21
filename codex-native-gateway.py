@@ -1054,10 +1054,13 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     ]
 
     def _attempt() -> tuple[str, JSON]:
-        proc = subprocess.Popen(
-            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, text=True, bufsize=1, cwd=cwd,
-        )
+        try:
+            proc = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, bufsize=1, cwd=cwd,
+            )
+        except OSError as exc:
+            raise GatewayError(502, "reasonix_acp_error", f"failed to start reasonix acp: {exc}")
         out_q: _queue.Queue = _queue.Queue()
         text_parts: list[str] = []
         session_id = {"v": None}
