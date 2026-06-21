@@ -414,6 +414,17 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         text, usage = run_reasonix_acp(prompt, config)
         gateway_trace("reasonix_acp_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
+        ledger = env_first(
+            "CLAUDE_CODEX_REASONIX_COST_LEDGER",
+            default=str(Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+                                       default=os.path.dirname(os.path.abspath(__file__)))) / "runtime" / "reasonix-cost.jsonl"),
+        )
+        append_reasonix_cost(
+            ledger, usage,
+            cwd=env_first("CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd()),
+            model=str(config.get("target_model") or ""),
+            claude_equiv=usage.get("reasonix_claude_equiv_usd"),
+        )
         return anthropic_end_turn_response(requested_model, usage, text=text)
 
     api_key = str(config.get("api_key") or "")
@@ -1048,6 +1059,85 @@ def run_codex_cli(prompt: str, config: JSON) -> tuple[str, JSON]:
     return text, usage
 
 
+def append_reasonix_cost(ledger_path: str, usage: JSON, cwd: str = "", model: str = "",
+                         claude_equiv: float | None = None) -> None:
+    """Append one per-lane cost record to the session cost ledger (JSONL).
+
+    Fail-open: a broken/unwritable ledger path must never break a lane.
+    The reasonix CLI's own ~/.reasonix/usage.jsonl has session=null and no cwd,
+    so it can't attribute cost to a session/project — this ledger adds cwd + ts.
+    """
+    try:
+        record = {
+            "ts": time.time(),
+            "cost_usd": usage.get("reasonix_cost_usd"),
+            "claude_equiv_usd": claude_equiv,
+            "cache_pct": usage.get("reasonix_cache_pct"),
+            "input_tokens": usage.get("input_tokens"),
+            "output_tokens": usage.get("output_tokens"),
+            "cwd": cwd,
+            "model": model,
+        }
+        path = Path(ledger_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def summarize_reasonix_cost(ledger_path: str) -> JSON:
+    """Aggregate the cost ledger into a summary dict. Missing/empty → zeros."""
+    lanes = 0
+    total = 0.0
+    claude_equiv = 0.0
+    in_tok = 0
+    out_tok = 0
+    cache_vals: list[float] = []
+    try:
+        with open(ledger_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                lanes += 1
+                c = rec.get("cost_usd")
+                if isinstance(c, (int, float)):
+                    total += float(c)
+                ce = rec.get("claude_equiv_usd")
+                if isinstance(ce, (int, float)):
+                    claude_equiv += float(ce)
+                if isinstance(rec.get("input_tokens"), int):
+                    in_tok += rec["input_tokens"]
+                if isinstance(rec.get("output_tokens"), int):
+                    out_tok += rec["output_tokens"]
+                cp = rec.get("cache_pct")
+                if isinstance(cp, (int, float)):
+                    cache_vals.append(float(cp))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        pass
+    avg_cache = round(sum(cache_vals) / len(cache_vals), 1) if cache_vals else 0.0
+    saved = claude_equiv - total
+    saved_pct = round(100.0 * saved / claude_equiv, 1) if claude_equiv > 0 else 0.0
+    return {
+        "lanes": lanes,
+        "total_usd": total,
+        "claude_equiv_usd": claude_equiv,
+        "saved_usd": saved,
+        "saved_pct": saved_pct,
+        "avg_cache_pct": avg_cache,
+        "input_tokens": in_tok,
+        "output_tokens": out_tok,
+        "avg_per_lane_usd": round(total / lanes, 6) if lanes else 0.0,
+    }
+
+
 def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     import queue as _queue
     reasonix_bin = str(config.get("reasonix_bin") or env_first("REASONIX_BIN", default="reasonix"))
@@ -1091,6 +1181,45 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         session_id = {"v": None}
         prompt_done = {"v": False}
         stop_reason = {"v": None}
+        captured: dict = {"v": None}
+
+        def _read_transcript_cost(path: str) -> dict | None:
+            # Poll the transcript for the assistant_final record (cost + usage),
+            # which reasonix flushes shortly AFTER stopReason. Returns a dict of
+            # {cost, claude_equiv, in_tok, out_tok, cache} or None if not yet present.
+            deadline = _time.monotonic() + 2.0
+            while True:
+                cost = claude_equiv = cache = in_tok = out_tok = None
+                try:
+                    with open(path, "r", encoding="utf-8") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                rec = json.loads(line)
+                            except Exception:
+                                continue
+                            if isinstance(rec.get("cost"), (int, float)):
+                                cost = (cost or 0.0) + float(rec["cost"])
+                            if isinstance(rec.get("claudeEquivUsd"), (int, float)):
+                                claude_equiv = (claude_equiv or 0.0) + float(rec["claudeEquivUsd"])
+                            u = rec.get("usage")
+                            if isinstance(u, dict):
+                                if isinstance(u.get("prompt_tokens"), int):
+                                    in_tok = u["prompt_tokens"]
+                                if isinstance(u.get("completion_tokens"), int):
+                                    out_tok = u["completion_tokens"]
+                                hit = u.get("prompt_cache_hit_tokens")
+                                miss = u.get("prompt_cache_miss_tokens")
+                                if isinstance(hit, int) and isinstance(miss, int) and (hit + miss) > 0:
+                                    cache = round(100.0 * hit / (hit + miss), 1)
+                except Exception:
+                    pass
+                if cost is not None or _time.monotonic() > deadline:
+                    return {"cost": cost, "claude_equiv": claude_equiv,
+                            "in_tok": in_tok, "out_tok": out_tok, "cache": cache}
+                _time.sleep(0.1)
 
         def send(obj: JSON) -> None:
             assert proc.stdin is not None
@@ -1151,31 +1280,45 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
                 elif msg.get("id") == 3 and "result" in msg:
                     stop_reason["v"] = msg["result"].get("stopReason")
                     prompt_done["v"] = True
+                    # Poll the transcript for the assistant_final cost record WHILE
+                    # the process is still alive — reasonix writes that record a
+                    # beat after stopReason, and reaping the process first (in the
+                    # finally below) loses it. captured["v"] holds the parsed result.
+                    captured["v"] = _read_transcript_cost(transcript_path)
                     break
                 elif msg.get("id") == 3 and "error" in msg:
                     proc.kill()
                     raise GatewayError(502, "reasonix_acp_error", msg["error"].get("message", "session/prompt error"))
 
         finally:
-            # FIX 2: deterministic reap + pipe close on every exit path
-            # (success, GatewayError, timeout, OSError from within the loop).
-            # Terminate first so the process closes its end of stderr,
-            # allowing our stderr.read() below to return rather than block.
+            # Deterministic reap + pipe close on every exit path. Close OUR stdin
+            # first (signals EOF so reasonix can finish flushing its transcript and
+            # exit on its own), then give it a short grace period to exit cleanly
+            # BEFORE terminating. Terminating immediately killed reasonix mid-flush,
+            # which lost the cost/usage transcript record ~2/3 of the time.
             try:
-                proc.terminate()
+                if proc.stdin:
+                    proc.stdin.close()
             except Exception:
                 pass
             try:
-                proc.wait(timeout=5)
+                proc.wait(timeout=2)  # graceful: let it flush transcript + exit
             except Exception:
                 try:
-                    proc.kill()
+                    proc.terminate()
                 except Exception:
                     pass
                 try:
-                    proc.wait(timeout=2)
+                    proc.wait(timeout=3)
                 except Exception:
-                    pass
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        proc.wait(timeout=2)
+                    except Exception:
+                        pass
             # Read stderr now that the process is dead (won't block).
             # On error/exception paths this is a best-effort capture; the
             # caller receives the GatewayError and we discard stderr_text.
@@ -1195,41 +1338,22 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         # from the transcript JSONL below.
         _ = _stderr_capture
 
-        # Parse the transcript: sum per-turn `cost`, take the LAST turn's token
-        # usage, and compute cache % from cache_hit / (hit + miss) tokens.
-        cost = None
-        cache = None
-        in_tok = None
-        out_tok = None
+        # Cost/usage were parsed from the transcript WHILE the process was still
+        # alive (captured["v"]), because reasonix flushes the assistant_final cost
+        # record a beat after stopReason and the reap above would otherwise lose it.
+        # Fall back to a fresh read if that path didn't run (e.g. error exit).
+        parsed = captured["v"]
+        if parsed is None:
+            parsed = _read_transcript_cost(transcript_path) or {}
+        cost = parsed.get("cost")
+        claude_equiv = parsed.get("claude_equiv")
+        cache = parsed.get("cache")
+        in_tok = parsed.get("in_tok")
+        out_tok = parsed.get("out_tok")
         try:
-            with open(transcript_path, "r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except Exception:
-                        continue
-                    if isinstance(rec.get("cost"), (int, float)):
-                        cost = (cost or 0.0) + float(rec["cost"])
-                    u = rec.get("usage")
-                    if isinstance(u, dict):
-                        if isinstance(u.get("prompt_tokens"), int):
-                            in_tok = u["prompt_tokens"]
-                        if isinstance(u.get("completion_tokens"), int):
-                            out_tok = u["completion_tokens"]
-                        hit = u.get("prompt_cache_hit_tokens")
-                        miss = u.get("prompt_cache_miss_tokens")
-                        if isinstance(hit, int) and isinstance(miss, int) and (hit + miss) > 0:
-                            cache = round(100.0 * hit / (hit + miss), 1)
+            os.unlink(transcript_path)
         except Exception:
             pass
-        finally:
-            try:
-                os.unlink(transcript_path)
-            except Exception:
-                pass
 
         text = "".join(text_parts)
         usage = {
@@ -1238,6 +1362,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
             "output_tokens": out_tok if out_tok is not None else max(1, len(text) // 4),
             "reasonix_cost_usd": cost,
             "reasonix_cache_pct": cache,
+            "reasonix_claude_equiv_usd": claude_equiv,
         }
         return text, usage
 

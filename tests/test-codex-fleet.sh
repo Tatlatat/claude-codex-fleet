@@ -1481,3 +1481,5 @@ if [[ "${CLAUDE_CODEX_REASONIX_E2E:-0}" == "1" ]]; then
 else
   echo "SKIP: reasonix e2e (set CLAUDE_CODEX_REASONIX_E2E=1 to run)"
 fi
+
+python3 "$ROOT/tests/test-reasonix-cost-ledger.py" || fail "reasonix cost ledger regression"
