@@ -1475,3 +1475,9 @@ assert reg["claude-reasonix-flash"]["provider"] == "reasonix_cli"
 PY
 
 python3 "$ROOT/tests/test-reasonix-acp.py" || fail "reasonix acp driver regression"
+
+if [[ "${CLAUDE_CODEX_REASONIX_E2E:-0}" == "1" ]]; then
+  bash "$ROOT/tests/test-reasonix-e2e.sh" || fail "reasonix e2e"
+else
+  echo "SKIP: reasonix e2e (set CLAUDE_CODEX_REASONIX_E2E=1 to run)"
+fi
