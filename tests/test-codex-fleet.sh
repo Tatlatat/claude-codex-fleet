@@ -77,6 +77,13 @@ grep -q "qwen36-mlx" "$ROOT/system-prompt.md" || fail "prompt must mention the l
 grep -q "Claude Code Router" "$ROOT/system-prompt.md" || fail "prompt must describe Claude Code Router mode"
 grep -q "claude-codex router" "$ROOT/system-prompt.md" || fail "prompt must document explicit router activation"
 
+RX_PROMPT="$ROOT/system-prompt-reasonix.md"
+[[ -f "$RX_PROMPT" ]] || fail "missing reasonix system prompt"
+grep -q "claude-reasonix-flash" "$RX_PROMPT" || fail "reasonix prompt must name the flash agent"
+grep -q "atomic" "$RX_PROMPT" || fail "reasonix prompt must teach atomic-task decomposition"
+grep -q "unlimited" "$RX_PROMPT" || fail "reasonix prompt must state agent count is unlimited"
+grep -q "web search" "$RX_PROMPT" || fail "reasonix prompt must mention built-in web search"
+
 python3 - "$ROOT/bridge-settings.json" "$WORKFLOW_HOOK" <<'PY'
 import json
 import sys
