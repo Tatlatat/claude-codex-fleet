@@ -1469,6 +1469,7 @@ grep -Eq 'claude-reasonix\)\s*CLAUDE_CODEX_FLAVOR="?reasonix"?' "$LAUNCHER_BIN" 
 grep -q 'claude-reasonix-flash' "$LAUNCHER_BIN" || fail "launcher reasonix flavor must force claude-reasonix-flash"
 grep -q "REASONIX_BIN" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must export REASONIX_BIN (gateway needs reasonix+node on PATH)"
 grep -q "CLAUDE_CODEX_CCR_CODEX_ROUTE.*claude-reasonix-flash" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must route worker agents to claude-reasonix-flash, not codex"
+grep -q "CLAUDE_CODEX_CCR_DEEPSEEK_MODEL.*claude-reasonix-flash" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must point deepseek-* agent model at reasonix-flash (else they die Not-logged-in)"
 [[ -L "$HOME/.local/bin/claude-reasonix" ]] || fail "claude-reasonix must be a symlink"
 
 CLAUDE_CODEX_FLAVOR=reasonix python3 - "$GATEWAY" <<'PY' || fail "reasonix flavor must expose claude-reasonix-flash"
