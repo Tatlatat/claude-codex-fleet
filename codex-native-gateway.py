@@ -355,6 +355,8 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         )
         return anthropic_end_turn_response(requested_model, usage, text=text)
 
+    raise GatewayError(400, "unsupported_provider", f"unsupported provider: {config.get('provider')!r}; this gateway serves only claude-reasonix-flash")
+
 
 def last_openai_user_text(payload: JSON) -> str:
     for message in reversed(payload.get("messages") or []):
@@ -1337,6 +1339,8 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
                 "total_tokens": prompt_tokens + completion_tokens,
             },
         }
+
+    raise GatewayError(400, "unsupported_provider", f"unsupported provider: {config.get('provider')!r}; this gateway serves only claude-reasonix-flash")
 
 
 class GatewayError(Exception):
