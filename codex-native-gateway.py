@@ -336,59 +336,6 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
             "usage": {"input_tokens": estimate_tokens(payload), "output_tokens": 12},
         }
 
-    if config.get("provider") == "codex_cli":
-        structured_tool = requested_structured_output_tool(payload)
-        if structured_tool and anthropic_has_successful_structured_output(payload.get("messages")):
-            usage = {"input_tokens": estimate_tokens(payload), "output_tokens": 0}
-            gateway_trace(
-                "codex_cli_anthropic_structured_output_already_succeeded",
-                model=requested_model,
-                structured_tool=structured_tool,
-            )
-            return anthropic_end_turn_response(
-                requested_model,
-                usage,
-                text="Structured output provided successfully.",
-            )
-        messages = anthropic_messages_to_openai(payload)
-        prompt = openai_messages_to_prompt(messages, payload.get("tools"))
-        try:
-            text, usage = run_codex_cli(prompt, config)
-        except GatewayError as exc:
-            if structured_tool and exc.error_type == "codex_timeout":
-                usage = {"input_tokens": estimate_tokens(payload), "output_tokens": 1}
-                structured_input = structured_timeout_fallback(payload.get("tools"), structured_tool, exc.message)
-                gateway_trace(
-                    "codex_cli_anthropic_structured_timeout_fallback",
-                    model=requested_model,
-                    structured_tool=structured_tool,
-                    reason=exc.message,
-                )
-                return anthropic_tool_use_response(requested_model, structured_tool, structured_input, usage)
-            raise
-        structured_input = parse_json_object_from_text(text) if structured_tool else None
-        gateway_trace(
-            "codex_cli_anthropic_response",
-            model=requested_model,
-            tool_names=tool_names_from_payload(payload),
-            tool_choice_name=tool_name_from_schema(payload.get("tool_choice") or {}) if isinstance(payload.get("tool_choice"), dict) else "",
-            structured_tool=structured_tool,
-            parsed_json_object=structured_input is not None,
-        )
-        if structured_tool:
-            if structured_input is not None:
-                return anthropic_tool_use_response(requested_model, structured_tool, structured_input, usage)
-        return {
-            "id": f"msg_{uuid4().hex}",
-            "type": "message",
-            "role": "assistant",
-            "model": requested_model,
-            "content": [{"type": "text", "text": text}],
-            "stop_reason": "end_turn",
-            "stop_sequence": None,
-            "usage": usage,
-        }
-
     if config.get("provider") == "reasonix_cli":
         messages = anthropic_messages_to_openai(payload)
         prompt = openai_messages_to_prompt(messages, payload.get("tools"))
@@ -407,36 +354,6 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
             claude_equiv=usage.get("reasonix_claude_equiv_usd"),
         )
         return anthropic_end_turn_response(requested_model, usage, text=text)
-
-    api_key = str(config.get("api_key") or "")
-    if not api_key:
-        raise GatewayError(
-            401,
-            "authentication_error",
-            (
-                f"{requested_model} needs an API key. Set OPENAI_API_KEY for claude-codex-pro "
-                "or DEEPSEEK_API_KEY for claude-deepseek-pro before starting claude-codex."
-            ),
-        )
-
-    url = str(config["base_url"]).rstrip("/") + "/chat/completions"
-    body = json_bytes(provider_chat_payload(payload, config))
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "content-type": "application/json",
-            "authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=float(os.getenv("CLAUDE_CODEX_GATEWAY_TIMEOUT", "600"))) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise GatewayError(exc.code, "provider_error", detail) from exc
-    return openai_response_to_anthropic(data, requested_model)
 
 
 def last_openai_user_text(payload: JSON) -> str:
@@ -1377,78 +1294,6 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
 
 
 def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSON) -> JSON:
-    if os.getenv("CLAUDE_CODEX_GATEWAY_MOCK", "").lower() in {"1", "true", "yes", "on"}:
-        return mock_openai_chat_response(payload, requested_model)
-
-    if config.get("provider") == "codex_cli":
-        messages = payload.get("messages") or []
-        normalized = [item for item in messages if isinstance(item, dict)]
-        structured_tool = requested_structured_output_tool(payload)
-        if structured_tool and openai_has_successful_structured_output(normalized):
-            gateway_trace(
-                "codex_cli_openai_structured_output_already_succeeded",
-                model=requested_model,
-                structured_tool=structured_tool,
-            )
-            return openai_stop_response(
-                requested_model,
-                estimate_tokens(payload),
-                1,
-                "Structured output provided successfully.",
-            )
-        prompt = openai_messages_to_prompt(normalized, payload.get("tools"))
-        try:
-            text, usage = run_codex_cli(prompt, config)
-        except GatewayError as exc:
-            if structured_tool and exc.error_type == "codex_timeout":
-                prompt_tokens = estimate_tokens(payload)
-                structured_input = structured_timeout_fallback(payload.get("tools"), structured_tool, exc.message)
-                gateway_trace(
-                    "codex_cli_openai_structured_timeout_fallback",
-                    model=requested_model,
-                    structured_tool=structured_tool,
-                    reason=exc.message,
-                )
-                return openai_tool_call_response(requested_model, structured_tool, structured_input, prompt_tokens, 1)
-            raise
-        prompt_tokens = int(usage.get("input_tokens") or estimate_tokens(prompt))
-        completion_tokens = int(usage.get("output_tokens") or max(1, len(text) // 4))
-        structured_input = parse_json_object_from_text(text) if structured_tool else None
-        gateway_trace(
-            "codex_cli_openai_response",
-            model=requested_model,
-            tool_names=tool_names_from_payload(payload),
-            tool_choice_name=tool_name_from_schema(payload.get("tool_choice") or {}) if isinstance(payload.get("tool_choice"), dict) else "",
-            structured_tool=structured_tool,
-            parsed_json_object=structured_input is not None,
-        )
-        if structured_tool and structured_input is not None:
-            return openai_tool_call_response(
-                requested_model,
-                structured_tool,
-                structured_input,
-                prompt_tokens,
-                completion_tokens,
-            )
-        return {
-            "id": f"chatcmpl_{uuid4().hex}",
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": requested_model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": text},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": completion_tokens,
-                "total_tokens": prompt_tokens + completion_tokens,
-            },
-        }
-
     if config.get("provider") == "reasonix_cli":
         # CCR routes every workflow subagent lane through /v1/chat/completions,
         # which lands here. Without this branch reasonix_cli fell through to the
@@ -1492,39 +1337,6 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
                 "total_tokens": prompt_tokens + completion_tokens,
             },
         }
-
-    api_key = str(config.get("api_key") or "")
-    if not api_key:
-        raise GatewayError(
-            401,
-            "authentication_error",
-            (
-                f"{requested_model} needs an API key. Set OPENAI_API_KEY for claude-codex-pro "
-                "or DEEPSEEK_API_KEY for claude-deepseek-pro before starting claude-codex."
-            ),
-        )
-
-    url = str(config["base_url"]).rstrip("/") + "/chat/completions"
-    body = json_bytes(provider_openai_chat_payload(payload, config))
-    req = urllib.request.Request(
-        url,
-        data=body,
-        headers={
-            "content-type": "application/json",
-            "authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=float(os.getenv("CLAUDE_CODEX_GATEWAY_TIMEOUT", "600"))) as response:
-            data = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise GatewayError(exc.code, "provider_error", detail) from exc
-
-    if isinstance(data, dict):
-        data["model"] = requested_model
-    return data
 
 
 class GatewayError(Exception):
