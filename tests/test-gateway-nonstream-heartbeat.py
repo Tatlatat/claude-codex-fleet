@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Regression: /v1/messages with a codex_cli model must emit streaming heartbeats
+"""Regression: /v1/messages with a reasonix_cli model must emit streaming heartbeats
 even when the client did NOT set stream=true.
 
 Root cause being fixed: the workflow watchdog kills an agent() lane at exactly
 180s when it sees no "visible content progress". The gateway only emitted the
 keepalive heartbeat on the `payload.get("stream")` branch; a non-stream request
 fell through to a blocking `send_json(200, blob)` that produced zero progress
-events, so any codex lane running >180s was interrupted. ~34% of real workflow
+events, so any reasonix lane running >180s was interrupted. ~34% of real workflow
 lanes (those sent without stream=true) died this way at exactly 180.0s.
 
 This test drives the gateway's do_POST /v1/messages handler against a fake
-codex_cli producer that blocks, and asserts that a non-stream request now goes
+reasonix_cli producer that blocks, and asserts that a non-stream request now goes
 down the heartbeat path (emits message_start + content_block_delta) rather than
 blocking silently into a single JSON blob.
 
-No network, no real codex: call_openai_compatible is monkeypatched. The handler
+No network, no real reasonix: run_reasonix_acp is monkeypatched. The handler
 is driven with fake rfile/wfile so nothing touches a live gateway.
 """
 from __future__ import annotations
@@ -73,37 +73,37 @@ class FakeHandler(gw.Handler):
         return self.wfile.getvalue().decode("utf-8", "replace")
 
 
-def install_fake_codex(registry_model="claude-codex-pro", block_secs=0.0):
-    """Force a codex_cli registry entry and a producer that optionally blocks."""
+def install_fake_reasonix(registry_model="claude-reasonix-flash", block_secs=0.0):
+    """Force a reasonix_cli registry entry and stub out run_reasonix_acp."""
     orig_registry = gw.model_registry
-    orig_call = gw.call_openai_compatible
+    orig_run_reasonix_acp = gw.run_reasonix_acp
 
     def fake_registry():
-        return {registry_model: {"provider": "codex_cli"}}
+        return {registry_model: {"provider": "reasonix_cli"}}
 
-    def fake_call(payload, model, config):
+    def fake_run_reasonix_acp(prompt, config):
         if block_secs:
             time.sleep(block_secs)
-        return {
-            "id": "msg_test", "type": "message", "role": "assistant", "model": model,
-            "content": [{"type": "text", "text": "PONG"}],
-            "stop_reason": "end_turn", "stop_sequence": None,
-            "usage": {"input_tokens": 1, "output_tokens": 1},
-        }
+        return ("PONG", {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "reasonix_cost_usd": None,
+            "reasonix_cache_pct": None,
+        })
 
     gw.model_registry = fake_registry
-    gw.call_openai_compatible = fake_call
+    gw.run_reasonix_acp = fake_run_reasonix_acp
     return lambda: (setattr(gw, "model_registry", orig_registry),
-                    setattr(gw, "call_openai_compatible", orig_call))
+                    setattr(gw, "run_reasonix_acp", orig_run_reasonix_acp))
 
 
-def test_nonstream_codex_emits_heartbeat():
-    """A non-stream codex request must produce SSE progress (message_start +
+def test_nonstream_reasonix_emits_heartbeat():
+    """A non-stream reasonix request must produce SSE progress (message_start +
     content_block_delta heartbeat), NOT a single silent JSON blob."""
-    restore = install_fake_codex()
+    restore = install_fake_reasonix()
     try:
         body = json.dumps({
-            "model": "claude-codex-pro", "max_tokens": 16,
+            "model": "claude-reasonix-flash", "max_tokens": 16,
             "messages": [{"role": "user", "content": "say PONG"}],
             # NOTE: no "stream": true  -> this is the path that used to block.
         }).encode()
@@ -111,22 +111,22 @@ def test_nonstream_codex_emits_heartbeat():
         h.do_POST()
         out = h.out
         expect("event: message_start" in out,
-               f"non-stream codex must emit message_start (heartbeat path). Got:\n{out[:400]}")
+               f"non-stream reasonix must emit message_start (heartbeat path). Got:\n{out[:400]}")
         expect("content_block_delta" in out or "content_block_start" in out,
-               f"non-stream codex must open a content block for the watchdog. Got:\n{out[:400]}")
+               f"non-stream reasonix must open a content block for the watchdog. Got:\n{out[:400]}")
         expect("PONG" in out, f"final content must still arrive. Got:\n{out[:400]}")
         expect(h.sent_headers.get("content-type", "").startswith("text/event-stream"),
-               f"non-stream codex should now stream SSE. content-type={h.sent_headers.get('content-type')}")
+               f"non-stream reasonix should stream SSE. content-type={h.sent_headers.get('content-type')}")
     finally:
         restore()
 
 
 def test_stream_true_still_works():
     """The existing stream=true path must be unchanged."""
-    restore = install_fake_codex()
+    restore = install_fake_reasonix()
     try:
         body = json.dumps({
-            "model": "claude-codex-pro", "max_tokens": 16, "stream": True,
+            "model": "claude-reasonix-flash", "max_tokens": 16, "stream": True,
             "messages": [{"role": "user", "content": "say PONG"}],
         }).encode()
         h = FakeHandler(body)
@@ -144,10 +144,10 @@ def test_heartbeat_fires_before_slow_producer_returns():
     exactly what keeps the 180s watchdog from firing."""
     import os
     os.environ["CLAUDE_CODEX_GATEWAY_STREAM_KEEPALIVE_SECONDS"] = "1"
-    restore = install_fake_codex(block_secs=2.5)
+    restore = install_fake_reasonix(block_secs=2.5)
     try:
         body = json.dumps({
-            "model": "claude-codex-pro", "max_tokens": 16,
+            "model": "claude-reasonix-flash", "max_tokens": 16,
             "messages": [{"role": "user", "content": "slow"}],
         }).encode()
         h = FakeHandler(body)
@@ -162,53 +162,11 @@ def test_heartbeat_fires_before_slow_producer_returns():
         os.environ.pop("CLAUDE_CODEX_GATEWAY_STREAM_KEEPALIVE_SECONDS", None)
 
 
-def install_fake_reasonix(registry_model="claude-reasonix-flash"):
-    """Force a reasonix_cli registry entry and stub out run_reasonix_acp."""
-    orig_registry = gw.model_registry
-    orig_run_reasonix_acp = gw.run_reasonix_acp
-
-    def fake_registry():
-        return {registry_model: {"provider": "reasonix_cli"}}
-
-    def fake_run_reasonix_acp(prompt, config):
-        return ("PONG", {
-            "input_tokens": 1,
-            "output_tokens": 1,
-            "reasonix_cost_usd": None,
-            "reasonix_cache_pct": None,
-        })
-
-    gw.model_registry = fake_registry
-    gw.run_reasonix_acp = fake_run_reasonix_acp
-    return lambda: (setattr(gw, "model_registry", orig_registry),
-                    setattr(gw, "run_reasonix_acp", orig_run_reasonix_acp))
-
-
-def test_nonstream_reasonix_emits_heartbeat():
-    """A non-stream reasonix request must produce SSE heartbeats, NOT a JSON blob."""
-    restore = install_fake_reasonix()
-    try:
-        body = json.dumps({
-            "model": "claude-reasonix-flash", "max_tokens": 16,
-            "messages": [{"role": "user", "content": "say PONG"}],
-            # NOTE: no "stream": true  -> this is the path that must now go through heartbeat.
-        }).encode()
-        h = FakeHandler(body)
-        h.do_POST()
-        out = h.out
-        expect("event: message_start" in out,
-               f"non-stream reasonix must emit message_start (heartbeat path). Got:\n{out[:400]}")
-        expect("PONG" in out, f"final content must still arrive. Got:\n{out[:400]}")
-    finally:
-        restore()
-
-
 def main() -> int:
-    test_nonstream_codex_emits_heartbeat()
+    test_nonstream_reasonix_emits_heartbeat()
     test_stream_true_still_works()
     test_heartbeat_fires_before_slow_producer_returns()
-    test_nonstream_reasonix_emits_heartbeat()
-    print("PASS: gateway non-stream codex heartbeat")
+    print("PASS: gateway non-stream reasonix heartbeat")
     return 0
 
 

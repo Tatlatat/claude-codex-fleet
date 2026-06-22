@@ -373,18 +373,15 @@ grep -q "test prompt" <<<"$run_output" || fail "run should forward prompt args"
 
 native_output="$(CLAUDE_CODEX_NATIVE_SUBAGENTS=1 "$LAUNCHER" run "native prompt")"
 grep -q -- " --agents {" <<<"$native_output" || fail "opt-in native gateway mode should pass native subagent definitions"
-grep -q "claude-codex-pro" <<<"$native_output" || fail "opt-in native gateway mode should include the Codex-backed model"
-grep -q "claude-deepseek-pro" <<<"$native_output" || fail "opt-in native gateway mode should include the DeepSeek-backed model"
+grep -q "claude-reasonix-flash" <<<"$native_output" || fail "opt-in native gateway mode should include the Reasonix-backed model"
 if grep -q -- "--disallowedTools Agent,Task" <<<"$native_output"; then
   fail "opt-in native gateway mode should not globally block Agent/Task"
 fi
 
 router_output="$("$LAUNCHER" router "router prompt")"
 grep -q -- " --agents {" <<<"$router_output" || fail "router mode should pass native subagent definitions"
-grep -q "claude-codex-pro" <<<"$router_output" || fail "router mode should include the Codex-backed model"
-grep -q "claude-deepseek-pro" <<<"$router_output" || fail "router mode should include the DeepSeek-backed model"
-grep -q "<CCR-SUBAGENT-MODEL>codex-gateway,claude-codex-pro</CCR-SUBAGENT-MODEL>" <<<"$router_output" || fail "router mode should tag Codex agents for CCR"
-grep -q "<CCR-SUBAGENT-MODEL>deepseek-gateway,claude-deepseek-pro</CCR-SUBAGENT-MODEL>" <<<"$router_output" || fail "router mode should tag DeepSeek agents for CCR"
+grep -q "claude-reasonix-flash" <<<"$router_output" || fail "router mode should include the Reasonix-backed model"
+grep -q "<CCR-SUBAGENT-MODEL>codex-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>" <<<"$router_output" || fail "router mode should tag worker agents for CCR via codex-gateway"
 grep -q "router prompt" <<<"$router_output" || fail "router mode should forward prompt args"
 if grep -q -- "--disallowedTools Agent,Task" <<<"$router_output"; then
   fail "router mode should not globally block Agent/Task"
@@ -392,7 +389,7 @@ fi
 
 router_login_output="$("$LAUNCHER" router-login "router login prompt")"
 grep -q -- " --agents {" <<<"$router_login_output" || fail "router-login mode should pass native subagent definitions"
-grep -q "<CCR-SUBAGENT-MODEL>codex-gateway,claude-codex-pro</CCR-SUBAGENT-MODEL>" <<<"$router_login_output" || fail "router-login mode should tag Codex agents for CCR"
+grep -q "<CCR-SUBAGENT-MODEL>codex-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>" <<<"$router_login_output" || fail "router-login mode should tag worker agents for CCR via codex-gateway"
 grep -q "router login prompt" <<<"$router_login_output" || fail "router-login mode should forward prompt args"
 if grep -q -- "--disallowedTools Agent,Task" <<<"$router_login_output"; then
   fail "router-login mode should not globally block Agent/Task"
@@ -458,20 +455,20 @@ printf 'ARGS=%s\n' "$*"
 SH
 chmod +x "$claude_env_mock"
 native_env_output="$(CLAUDE_BIN="$claude_env_mock" CLAUDE_CODEX_NATIVE_SUBAGENTS=1 "$LAUNCHER" run "native env prompt")"
-grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-codex-pro" <<<"$native_env_output" || fail "native gateway mode should force built-in subagents to the Codex-backed model"
+grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-reasonix-flash" <<<"$native_env_output" || fail "native gateway mode should force built-in subagents to the Reasonix-backed model"
 
 router_env_output="$(CLAUDE_BIN="$claude_env_mock" "$LAUNCHER" router "router env prompt")"
-grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-codex-pro" <<<"$router_env_output" || fail "router mode should force built-in subagents to the Codex-backed model"
-grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION=claude-codex-pro" <<<"$router_env_output" || fail "router mode should expose the Codex-backed custom model option"
+grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-reasonix-flash" <<<"$router_env_output" || fail "router mode should force built-in subagents to the Reasonix-backed model"
+grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION=claude-reasonix-flash" <<<"$router_env_output" || fail "router mode should expose the Reasonix-backed custom model option"
 
 router_env_inherit_output="$(CLAUDE_BIN="$claude_env_mock" CLAUDE_CODEX_SUBAGENT_MODEL=inherit "$LAUNCHER" router "router inherit prompt")"
 grep -q "CLAUDE_CODE_SUBAGENT_MODEL=inherit" <<<"$router_env_inherit_output" || fail "router mode should honor explicit CLAUDE_CODEX_SUBAGENT_MODEL overrides"
 
 router_qwen_env_output="$(CLAUDE_BIN="$claude_env_mock" "$LAUNCHER" router-qwen "router qwen env prompt")"
-grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-codex-pro" <<<"$router_qwen_env_output" || fail "router-qwen should still force subagents to the Codex-backed model by default"
+grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-reasonix-flash" <<<"$router_qwen_env_output" || fail "router-qwen should still force subagents to the Reasonix-backed model by default"
 grep -q "ANTHROPIC_BASE_URL=http://127.0.0.1:" <<<"$router_qwen_env_output" || fail "router-qwen should point Claude at the scoped CCR proxy"
 grep -q "ANTHROPIC_AUTH_TOKEN=claude-codex-router" <<<"$router_qwen_env_output" || fail "router-qwen should authenticate Claude to the scoped CCR proxy"
-grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION=qwen36-mlx" <<<"$router_qwen_env_output" || fail "router-qwen should expose Qwen as Claude Code's custom model option"
+grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION=claude-reasonix-flash" <<<"$router_qwen_env_output" || fail "router-qwen should expose the reasonix model id as Claude Code's custom model option"
 grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME=qwen36-mlx" <<<"$router_qwen_env_output" || fail "router-qwen should name Claude Code's custom model option as Qwen"
 grep -q -- "--model qwen36-mlx" <<<"$router_qwen_env_output" || fail "router-qwen env smoke should still select the local Qwen model"
 
@@ -501,10 +498,10 @@ if "claude-opus-4-8" not in providers["anthropic"].get("models", []):
     raise SystemExit(f"anthropic provider should advertise claude-opus-4-8: {providers['anthropic']}")
 if ccr_providers["anthropic"].get("transformer", {}).get("use") != ["Anthropic"]:
     raise SystemExit(f"anthropic provider should use CCR's registerable Anthropic transformer form: {ccr_providers['anthropic']}")
-if providers["codex-gateway"].get("models") != ["claude-codex-pro"]:
-    raise SystemExit(f"bad Codex CCR provider: {providers['codex-gateway']}")
-if providers["deepseek-gateway"].get("models") != ["claude-deepseek-pro"]:
-    raise SystemExit(f"bad DeepSeek CCR provider: {providers['deepseek-gateway']}")
+if providers["codex-gateway"].get("models") != ["claude-reasonix-flash"]:
+    raise SystemExit(f"bad codex-gateway CCR provider: {providers['codex-gateway']}")
+if providers["deepseek-gateway"].get("models") != ["claude-reasonix-flash"]:
+    raise SystemExit(f"bad deepseek-gateway CCR provider: {providers['deepseek-gateway']}")
 if providers["qwen36-local"].get("models") != ["qwen36-mlx"]:
     raise SystemExit(f"bad Qwen CCR provider: {providers['qwen36-local']}")
 custom_router = Path(config.get("CUSTOM_ROUTER_PATH", ""))
@@ -670,12 +667,12 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     agents = json.load(fh)
 required = {
-    "codex-worker": "claude-codex-pro",
-    "codex-security": "claude-codex-pro",
-    "codex-reviewer": "claude-codex-pro",
-    "codex-verify": "claude-codex-pro",
-    "deepseek-deep": "claude-deepseek-pro",
-    "deepseek-architecture": "claude-deepseek-pro",
+    "codex-worker": "claude-reasonix-flash",
+    "codex-security": "claude-reasonix-flash",
+    "codex-reviewer": "claude-reasonix-flash",
+    "codex-verify": "claude-reasonix-flash",
+    "deepseek-deep": "claude-reasonix-flash",
+    "deepseek-architecture": "claude-reasonix-flash",
 }
 for name, model in required.items():
     if agents.get(name, {}).get("model") != model:
@@ -774,7 +771,7 @@ python3 "$CCR_PROXY" \
   --port-file "$proxy_port_file" \
   --target "http://127.0.0.1:9" \
   --api-key "test-router-key" \
-  --models "claude-opus-4-8,claude-codex-pro,claude-deepseek-pro" \
+  --models "claude-opus-4-8,claude-reasonix-flash" \
   >"$tmp_home/ccr-proxy.log" 2>&1 &
 proxy_pid=$!
 for _ in {1..50}; do
@@ -800,9 +797,9 @@ if health.get("ok") is not True:
     raise SystemExit(f"bad CCR proxy health: {health}")
 models = json.load(urllib.request.urlopen(base + "/v1/models", timeout=5))
 ids = {item["id"] for item in models.get("data", [])}
-required = {"claude-opus-4-8", "claude-codex-pro", "claude-deepseek-pro"}
+required = {"claude-opus-4-8", "claude-reasonix-flash"}
 if not required.issubset(ids):
-    raise SystemExit(f"CCR proxy should expose Opus and native aliases for Claude Code discovery: {models}")
+    raise SystemExit(f"CCR proxy should expose Opus and reasonix alias for Claude Code discovery: {models}")
 PY
 kill "$proxy_pid"
 wait "$proxy_pid" 2>/dev/null || true
@@ -870,9 +867,9 @@ python3 "$CCR_PROXY" \
   --direct-alias-target "http://127.0.0.1:$(cat "$direct_port_file")" \
   --passthrough-main \
   --api-key "ccr-test-key" \
-  --models "claude-opus-4-8,claude-codex-pro,claude-deepseek-pro" \
-  --alias-models "claude-codex-pro,claude-deepseek-pro" \
-  --direct-alias-models "claude-codex-pro,claude-deepseek-pro" \
+  --models "claude-opus-4-8,claude-reasonix-flash" \
+  --alias-models "claude-reasonix-flash" \
+  --direct-alias-models "claude-reasonix-flash" \
   >"$tmp_home/ccr-proxy-passthrough.log" 2>&1 &
 passthrough_proxy_pid=$!
 for _ in {1..50}; do
@@ -918,14 +915,14 @@ doc_only = post(
 if doc_only.get("route") != "main" or doc_only.get("authorization") != "Bearer login-token":
     raise SystemExit(f"inline documentation text should not route the main model to CCR: {doc_only}")
 
-alias = post("claude-codex-pro", "Bearer login-token")
+alias = post("claude-reasonix-flash", "Bearer login-token")
 if alias.get("route") != "direct" or alias.get("authorization") != "Bearer ccr-test-key":
     raise SystemExit(f"direct alias model should route to the native gateway target with CCR auth: {alias}")
 
 tagged = post(
     "claude-opus-4-8",
     "Bearer login-token",
-    [{"type": "text", "text": "<CCR-SUBAGENT-MODEL>codex-gateway,claude-codex-pro</CCR-SUBAGENT-MODEL>\nworker"}],
+    [{"type": "text", "text": "<CCR-SUBAGENT-MODEL>codex-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>\nworker"}],
 )
 if tagged.get("route") != "ccr" or tagged.get("authorization") != "Bearer ccr-test-key":
     raise SystemExit(f"tagged subagent request should route to CCR even when the model is main Claude: {tagged}")
@@ -944,10 +941,10 @@ workflow_subagent = post(
 if (
     workflow_subagent.get("route") != "direct"
     or workflow_subagent.get("authorization") != "Bearer ccr-test-key"
-    or workflow_subagent.get("model") != "claude-codex-pro"
+    or workflow_subagent.get("model") != "claude-reasonix-flash"
 ):
     raise SystemExit(
-        "workflow subagent requests using the main model should be forced to the Codex-backed direct alias target: "
+        "workflow subagent requests using the main model should be forced to the Reasonix-backed direct alias target: "
         f"{workflow_subagent}"
     )
 PY
@@ -969,10 +966,10 @@ echo "PASS: codex fleet launcher"
 
 python3 "$ROOT/tests/test-workflow-selfheal.py" || fail "workflow self-heal regression"
 
-# Verify the launcher itself wires the reasonix flavor via basename/$0 detection
+# Verify the launcher itself wires the reasonix flavor
 LAUNCHER_BIN="$HOME/.local/bin/claude-codex"
 [[ -f "$LAUNCHER_BIN" ]] || fail "launcher not found at $LAUNCHER_BIN"
-grep -Eq 'claude-reasonix\)\s*CLAUDE_CODEX_FLAVOR="?reasonix"?' "$LAUNCHER_BIN" || fail "launcher must map claude-reasonix name to CLAUDE_CODEX_FLAVOR=reasonix"
+grep -Eq 'CLAUDE_CODEX_FLAVOR="?reasonix"?' "$LAUNCHER_BIN" || fail "launcher must set CLAUDE_CODEX_FLAVOR=reasonix"
 grep -q 'claude-reasonix-flash' "$LAUNCHER_BIN" || fail "launcher reasonix flavor must force claude-reasonix-flash"
 grep -q "REASONIX_BIN" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must export REASONIX_BIN (gateway needs reasonix+node on PATH)"
 grep -q "CLAUDE_CODEX_CCR_CODEX_ROUTE.*claude-reasonix-flash" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must route worker agents to claude-reasonix-flash, not codex"

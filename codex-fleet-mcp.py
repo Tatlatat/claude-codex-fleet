@@ -215,7 +215,7 @@ def tool_definitions() -> list[dict[str, Any]]:
     return [
         {
             "name": "run_codex_worker",
-            "description": "Run one Codex CLI subagent with codex exec. The Codex process exits when the task is complete.",
+            "description": "Run one Reasonix subagent (reasonix acp). The Reasonix process exits when the task is complete.",
             "inputSchema": task_schema,
         },
         {
