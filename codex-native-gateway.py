@@ -1084,9 +1084,9 @@ class Handler(BaseHTTPRequestHandler):
                 config = registry[model]
                 provider = config.get("provider")
                 if payload.get("stream"):
-                    # codex_cli AND reasonix_cli run blocking subprocesses that can
-                    # exceed the 180s workflow watchdog; both need the heartbeat-lazy
-                    # SSE path so a lane is not killed mid-run with no visible progress.
+                    # reasonix_cli runs a blocking subprocess that can exceed the 180s
+                    # workflow watchdog; it needs the heartbeat-lazy SSE path so a lane
+                    # is not killed mid-run with no visible progress.
                     if provider == "reasonix_cli":
                         self.send_openai_sse_response_lazy(
                             lambda: call_openai_chat_completion(payload, model, config)
@@ -1108,10 +1108,10 @@ class Handler(BaseHTTPRequestHandler):
                 registry = model_registry()
                 if model in registry:
                     config = registry[model]
-                    # codex_cli runs a blocking subprocess that can take >180s. The
+                    # reasonix_cli runs a blocking subprocess that can take >180s. The
                     # Claude Code workflow watchdog interrupts an agent() lane at
                     # exactly 180s if it sees no visible content progress. So ALWAYS
-                    # take the heartbeat-streaming path for codex_cli, regardless of
+                    # take the heartbeat-streaming path for reasonix_cli, regardless of
                     # the client's stream flag: ~34% of real lanes were sent without
                     # stream=true and died silently at 180s on the old blocking blob
                     # path. The Claude Code client parses the SSE stream fine even
