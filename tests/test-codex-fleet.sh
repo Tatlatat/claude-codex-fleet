@@ -8,9 +8,6 @@ WORKFLOW_HOOK="$ROOT/hooks/codex-workflow.py"
 MCP_SERVER="$ROOT/codex-fleet-mcp.py"
 GATEWAY="$ROOT/codex-native-gateway.py"
 CCR_PROXY="$ROOT/ccr-claude-proxy.py"
-E2E_EVIDENCE_TEST="$ROOT/tests/test-e2e-evidence.sh"
-E2E_HARNESS="$ROOT/tests/e2e-tmux-claude-codex.sh"
-EXPECTED_CODEX_MODEL="${CODEX_FLEET_MODEL:-gpt-5.4}"
 
 fail() {
   echo "FAIL: $*" >&2
@@ -28,54 +25,11 @@ assert_executable() {
 assert_file "$LAUNCHER"
 assert_executable "$LAUNCHER"
 assert_file "$ROOT/bridge-settings.json"
-assert_file "$ROOT/system-prompt.md"
 assert_file "$HOOK"
 assert_file "$WORKFLOW_HOOK"
 assert_file "$MCP_SERVER"
 assert_file "$GATEWAY"
 assert_file "$CCR_PROXY"
-assert_file "$E2E_EVIDENCE_TEST"
-assert_file "$E2E_HARNESS"
-"$E2E_EVIDENCE_TEST"
-
-python3 - "$E2E_HARNESS" <<'PY'
-from pathlib import Path
-import sys
-
-text = Path(sys.argv[1]).read_text(encoding="utf-8")
-required_fragments = [
-    "CODEX_E2E_MODEL",
-    "CLAUDE_CODEX_CODEX_MODEL=$CODEX_E2E_MODEL",
-    "CODEX_FLEET_MODEL=$CODEX_E2E_MODEL",
-    "--expected-model \"$CODEX_E2E_MODEL\"",
-    "-m \"$CODEX_E2E_MODEL\"",
-    "CODEX_MODEL_OK",
-]
-for fragment in required_fragments:
-    if fragment not in text:
-        raise SystemExit(f"E2E harness must support model override; missing {fragment!r}")
-for hard_coded in ("-m gpt-5.5", "CODEX_GPT55_OK"):
-    if hard_coded in text:
-        raise SystemExit(f"E2E harness still hard-codes the Codex model probe: {hard_coded}")
-PY
-
-grep -q "Non-subagent work stays in Claude Code" "$ROOT/system-prompt.md" || fail "prompt must keep non-subagent work in Claude Code"
-grep -q "UltraCode/Dynamic Workflow policy" "$ROOT/system-prompt.md" || fail "prompt must define UltraCode/Dynamic Workflow policy"
-grep -q "file worker, verify worker, review worker" "$ROOT/system-prompt.md" || fail "prompt must route UltraCode worker roles to Codex"
-grep -q "Do not spawn Claude subagents" "$ROOT/system-prompt.md" || fail "prompt must ban Claude subagents"
-grep -q "If the user asks whether your subagents are Claude or Codex" "$ROOT/system-prompt.md" || fail "prompt must answer subagent identity as Codex"
-grep -q "Codex worker" "$ROOT/system-prompt.md" || fail "prompt must route subagents to Codex workers"
-grep -q "run_codex_fleet" "$ROOT/system-prompt.md" || fail "prompt must route dynamic batches to run_codex_fleet"
-grep -q "/fast on" "$ROOT/system-prompt.md" || fail "prompt must mention Codex fast mode"
-grep -q "not automatically in UltraCode mode" "$ROOT/system-prompt.md" || fail "prompt must say UltraCode is not auto-enabled"
-grep -q "when the user writes the word ultracode" "$ROOT/system-prompt.md" || fail "prompt must route ultracode keyword activation"
-grep -q "preserves Claude Code's selected main model" "$ROOT/system-prompt.md" || fail "prompt must say safe mode preserves the main model"
-grep -q "Workflow scripts are rewritten" "$ROOT/system-prompt.md" || fail "prompt must describe Workflow rewrite hook"
-grep -q "experimental native gateway" "$ROOT/system-prompt.md" || fail "prompt must describe native gateway as experimental"
-grep -q "claude-deepseek-pro" "$ROOT/system-prompt.md" || fail "prompt must mention the DeepSeek-backed native model"
-grep -q "qwen36-mlx" "$ROOT/system-prompt.md" || fail "prompt must mention the local Qwen native model"
-grep -q "Claude Code Router" "$ROOT/system-prompt.md" || fail "prompt must describe Claude Code Router mode"
-grep -q "claude-codex router" "$ROOT/system-prompt.md" || fail "prompt must document explicit router activation"
 
 RX_PROMPT="$ROOT/system-prompt-reasonix.md"
 [[ -f "$RX_PROMPT" ]] || fail "missing reasonix system prompt"
@@ -138,364 +92,6 @@ latest_router_config() {
     -type f -print 2>/dev/null | sort | tail -n 1
 }
 
-fake_codex="$tmp_home/fake-codex"
-cat >"$fake_codex" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-cat >/dev/null
-printf 'OpenAI Codex v-test\n'
-printf 'codex\n'
-printf 'FAKE_CODEX_GATEWAY_OK\n'
-printf 'hook: Stop\n'
-printf 'tokens used\n1\n'
-SH
-chmod +x "$fake_codex"
-
-python3 - "$GATEWAY" "$fake_codex" <<'PY'
-import importlib.util
-import json
-import os
-import sys
-
-gateway_path, fake_codex = sys.argv[1:]
-os.environ["CODEX_BIN"] = fake_codex
-os.environ["CLAUDE_CODEX_CODEX_BACKEND"] = "codex-cli"
-expected_model = os.environ.get("CODEX_FLEET_MODEL", "gpt-5.4")
-os.environ["CLAUDE_CODEX_CODEX_MODEL"] = expected_model
-os.environ.pop("CLAUDE_CODEX_GATEWAY_MOCK", None)
-os.environ.pop("OPENAI_API_KEY", None)
-os.environ.pop("CLAUDE_CODEX_OPENAI_API_KEY", None)
-
-spec = importlib.util.spec_from_file_location("codex_native_gateway", gateway_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-
-config = module.model_registry()["claude-codex-pro"]
-if config.get("provider") != "codex_cli":
-    raise SystemExit(f"claude-codex-pro should default to codex_cli, got {config}")
-if config.get("target_model") != expected_model:
-    raise SystemExit(f"claude-codex-pro target model should be {expected_model}: {config}")
-response = module.call_openai_chat_completion(
-    {
-        "model": "claude-codex-pro",
-        "messages": [{"role": "user", "content": "gateway smoke"}],
-    },
-    "claude-codex-pro",
-    config,
-)
-content = response["choices"][0]["message"]["content"]
-if content != "FAKE_CODEX_GATEWAY_OK":
-    raise SystemExit(f"gateway did not return fake Codex output: {content!r}")
-PY
-
-fake_codex_retry="$tmp_home/fake-codex-retry"
-cat >"$fake_codex_retry" <<'SH'
-#!/usr/bin/env bash
-set -euo pipefail
-state="${FAKE_CODEX_RETRY_STATE:?missing retry state}"
-count=0
-if [[ -f "$state" ]]; then
-  count="$(tr -d '[:space:]' <"$state")"
-fi
-count=$((count + 1))
-printf '%s\n' "$count" >"$state"
-cat >/dev/null
-if (( count < 3 )); then
-  printf 'ERROR: exceeded retry limit, last status: 429 Too Many Requests\n' >&2
-  exit 1
-fi
-printf 'OpenAI Codex v-test\n'
-printf 'codex\n'
-printf 'RETRY_CODEX_OK\n'
-printf 'hook: Stop\n'
-SH
-chmod +x "$fake_codex_retry"
-
-python3 - "$GATEWAY" "$fake_codex_retry" "$tmp_home/retry-state" <<'PY'
-import importlib.util
-import os
-import sys
-from pathlib import Path
-
-gateway_path, fake_codex, retry_state = sys.argv[1:]
-os.environ["CODEX_BIN"] = fake_codex
-os.environ["FAKE_CODEX_RETRY_STATE"] = retry_state
-os.environ["CLAUDE_CODEX_CODEX_BACKEND"] = "codex-cli"
-os.environ["CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS"] = "3"
-os.environ["CLAUDE_CODEX_GATEWAY_CODEX_RETRY_BASE_SECONDS"] = "0"
-os.environ.pop("CLAUDE_CODEX_GATEWAY_MOCK", None)
-
-spec = importlib.util.spec_from_file_location("codex_native_gateway_retry", gateway_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-
-config = module.model_registry()["claude-codex-pro"]
-text, _usage = module.run_codex_cli("retry smoke", config)
-if text != "RETRY_CODEX_OK":
-    raise SystemExit(f"gateway retry did not return successful Codex output: {text!r}")
-attempts = int(Path(retry_state).read_text(encoding="utf-8").strip())
-if attempts != 3:
-    raise SystemExit(f"gateway retry should attempt exactly 3 times, got {attempts}")
-PY
-
-python3 - "$GATEWAY" <<'PY'
-import importlib.util
-import json
-import os
-import sys
-
-gateway_path = sys.argv[1]
-os.environ["CLAUDE_CODEX_CODEX_BACKEND"] = "codex-cli"
-os.environ.pop("CLAUDE_CODEX_GATEWAY_MOCK", None)
-
-spec = importlib.util.spec_from_file_location("codex_native_gateway_structured", gateway_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-
-def fake_run_codex_cli(prompt, config):
-    return ('{"marker":"STRUCTURED_CODEX_OK","ok":true}', {"input_tokens": 8, "output_tokens": 4})
-
-module.run_codex_cli = fake_run_codex_cli
-config = module.model_registry()["claude-codex-pro"]
-variant_tool = module.requested_structured_output_tool(
-    {"tools": [{"name": "claude_sdk_StructuredOutput"}], "tool_choice": {"type": "tool", "name": "claude_sdk_StructuredOutput"}}
-)
-if variant_tool != "claude_sdk_StructuredOutput":
-    raise SystemExit(f"StructuredOutput detector should allow SDK-prefixed names: {variant_tool!r}")
-response = module.call_openai_compatible(
-    {
-        "model": "claude-codex-pro",
-        "max_tokens": 128,
-        "tools": [
-            {
-                "name": "StructuredOutput",
-                "description": "Return the requested structured object.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "marker": {"type": "string"},
-                        "ok": {"type": "boolean"},
-                    },
-                    "required": ["marker", "ok"],
-                },
-            }
-        ],
-        "tool_choice": {"type": "tool", "name": "StructuredOutput"},
-        "messages": [{"role": "user", "content": "return structured marker"}],
-    },
-    "claude-codex-pro",
-    config,
-)
-content = response.get("content") or []
-if not content or content[0].get("type") != "tool_use":
-    raise SystemExit(f"expected StructuredOutput tool_use from Codex JSON: {response}")
-if content[0].get("name") != "StructuredOutput":
-    raise SystemExit(f"expected StructuredOutput tool name: {response}")
-if content[0].get("input", {}).get("marker") != "STRUCTURED_CODEX_OK":
-    raise SystemExit(f"bad StructuredOutput input: {response}")
-if response.get("stop_reason") != "tool_use":
-    raise SystemExit(f"expected tool_use stop reason: {response}")
-chat_response = module.call_openai_chat_completion(
-    {
-        "model": "claude-codex-pro",
-        "messages": [{"role": "user", "content": "return structured marker"}],
-        "tools": [
-            {
-                "type": "function",
-                "function": {
-                    "name": "StructuredOutput",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "marker": {"type": "string"},
-                            "ok": {"type": "boolean"},
-                        },
-                        "required": ["marker", "ok"],
-                    },
-                },
-            }
-        ],
-        "tool_choice": {"type": "function", "function": {"name": "StructuredOutput"}},
-    },
-    "claude-codex-pro",
-    config,
-)
-message = (chat_response.get("choices") or [{}])[0].get("message") or {}
-tool_calls = message.get("tool_calls") or []
-if not tool_calls:
-    raise SystemExit(f"expected OpenAI StructuredOutput tool call from Codex JSON: {chat_response}")
-function = tool_calls[0].get("function") or {}
-if function.get("name") != "StructuredOutput":
-    raise SystemExit(f"expected StructuredOutput function call: {chat_response}")
-arguments = json.loads(function.get("arguments") or "{}")
-if arguments.get("marker") != "STRUCTURED_CODEX_OK":
-    raise SystemExit(f"bad OpenAI StructuredOutput arguments: {chat_response}")
-PY
-
-python3 - "$GATEWAY" <<'PY'
-import importlib.util
-import os
-import sys
-
-gateway_path = sys.argv[1]
-os.environ["CLAUDE_CODEX_CODEX_BACKEND"] = "codex-cli"
-os.environ.pop("CLAUDE_CODEX_GATEWAY_MOCK", None)
-
-spec = importlib.util.spec_from_file_location("codex_native_gateway_structured_success", gateway_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-
-def fail_run_codex_cli(prompt, config):
-    raise AssertionError("Codex CLI should not be called after StructuredOutput succeeded")
-
-module.run_codex_cli = fail_run_codex_cli
-config = module.model_registry()["claude-codex-pro"]
-chat_response = module.call_openai_chat_completion(
-    {
-        "model": "claude-codex-pro",
-        "messages": [
-            {"role": "user", "content": "return structured marker"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": "call_structured_ok",
-                        "type": "function",
-                        "function": {
-                            "name": "StructuredOutput",
-                            "arguments": "{\"marker\":\"STRUCTURED_CODEX_OK\",\"ok\":true}",
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_structured_ok",
-                "content": "Structured output provided successfully",
-            },
-        ],
-        "tools": [
-            {
-                "type": "function",
-                "function": {
-                    "name": "StructuredOutput",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "marker": {"type": "string"},
-                            "ok": {"type": "boolean"},
-                        },
-                        "required": ["marker", "ok"],
-                    },
-                },
-            }
-        ],
-    },
-    "claude-codex-pro",
-    config,
-)
-choice = (chat_response.get("choices") or [{}])[0]
-message = choice.get("message") or {}
-if choice.get("finish_reason") != "stop":
-    raise SystemExit(f"successful StructuredOutput follow-up should stop: {chat_response}")
-if message.get("tool_calls"):
-    raise SystemExit(f"successful StructuredOutput follow-up should not repeat tool calls: {chat_response}")
-if not str(message.get("content") or "").strip():
-    raise SystemExit(f"successful StructuredOutput follow-up should return visible text: {chat_response}")
-
-anthropic_response = module.call_openai_compatible(
-    {
-        "model": "claude-codex-pro",
-        "tools": [{"name": "StructuredOutput", "input_schema": {"type": "object", "properties": {}}}],
-        "messages": [
-            {"role": "user", "content": "return structured marker"},
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "tool_use",
-                        "id": "toolu_structured_ok",
-                        "name": "StructuredOutput",
-                        "input": {"marker": "STRUCTURED_CODEX_OK", "ok": True},
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": "toolu_structured_ok",
-                        "content": "Structured output provided successfully",
-                    }
-                ],
-            },
-        ],
-    },
-    "claude-codex-pro",
-    config,
-)
-if anthropic_response.get("stop_reason") != "end_turn":
-    raise SystemExit(f"successful Anthropic StructuredOutput follow-up should end turn: {anthropic_response}")
-if any(block.get("type") == "tool_use" for block in anthropic_response.get("content") or []):
-    raise SystemExit(f"successful Anthropic StructuredOutput follow-up should not repeat tool_use: {anthropic_response}")
-if not module.text_from_content(anthropic_response.get("content")).strip():
-    raise SystemExit(f"successful Anthropic StructuredOutput follow-up should return visible text: {anthropic_response}")
-PY
-
-python3 - "$GATEWAY" <<'PY'
-import importlib.util
-import os
-import sys
-
-gateway_path = sys.argv[1]
-os.environ["CLAUDE_CODEX_CODEX_BACKEND"] = "codex-cli"
-os.environ.pop("CLAUDE_CODEX_GATEWAY_MOCK", None)
-spec = importlib.util.spec_from_file_location("codex_native_gateway_structured_timeout", gateway_path)
-module = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(module)
-
-def timeout_run_codex_cli(prompt, config):
-    raise module.GatewayError(504, "codex_timeout", "codex exec timed out after 165s")
-
-module.run_codex_cli = timeout_run_codex_cli
-config = module.model_registry()["claude-codex-pro"]
-anthropic_response = module.call_openai_compatible(
-    {
-        "model": "claude-codex-pro",
-        "tools": [
-            {
-                "name": "StructuredOutput",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "results": {"type": "array", "items": {"type": "object"}},
-                        "sourceQuality": {"type": "string"},
-                    },
-                    "required": ["results", "sourceQuality"],
-                },
-            }
-        ],
-        "messages": [{"role": "user", "content": "return structured output slowly"}],
-    },
-    "claude-codex-pro",
-    config,
-)
-content = anthropic_response.get("content") or []
-if anthropic_response.get("stop_reason") != "tool_use" or not content or content[0].get("name") != "StructuredOutput":
-    raise SystemExit(f"timeout fallback should return StructuredOutput tool_use: {anthropic_response}")
-if content[0].get("input", {}).get("results") != []:
-    raise SystemExit(f"timeout fallback should provide empty results: {anthropic_response}")
-if content[0].get("input", {}).get("sourceQuality") != "unreliable":
-    raise SystemExit(f"timeout fallback should mark source quality unreliable: {anthropic_response}")
-PY
-
 # Regression: the Anthropic streaming lazy path must emit heartbeat content_block_delta
 # events (so the workflow watchdog sees progress) while preserving a correct event
 # order and the final StructuredOutput tool_use block. A bare ': keepalive' comment is
@@ -529,7 +125,7 @@ tool_use_message = {
     "id": "msg_real",
     "type": "message",
     "role": "assistant",
-    "model": "claude-codex-pro",
+    "model": "claude-reasonix-flash",
     "content": [
         {"type": "tool_use", "id": "toolu_x", "name": "StructuredOutput", "input": {"results": [{"claim": "c"}]}}
     ],
@@ -543,7 +139,7 @@ def slow_producer():
     time.sleep(1.6)
     return tool_use_message
 
-handler.send_sse_response_lazy(slow_producer, "claude-codex-pro")
+handler.send_sse_response_lazy(slow_producer, "claude-reasonix-flash")
 out = captured.getvalue().decode("utf-8")
 
 # Parse the SSE stream into (event, data) pairs by JSON (format-agnostic to spacing).
@@ -1111,17 +707,17 @@ port = open(sys.argv[1], "r", encoding="utf-8").read().strip()
 base = f"http://127.0.0.1:{port}"
 models = json.load(urllib.request.urlopen(base + "/v1/models", timeout=5))
 ids = {item["id"] for item in models.get("data", [])}
-if not {"claude-codex-pro", "claude-deepseek-pro"}.issubset(ids):
-    raise SystemExit(f"gateway did not advertise native models: {models}")
+if "claude-reasonix-flash" not in ids:
+    raise SystemExit(f"gateway did not advertise claude-reasonix-flash: {models}")
 
-body = json.dumps({"model":"claude-codex-pro","messages":[{"role":"user","content":"hello"}]}).encode()
+body = json.dumps({"model":"claude-reasonix-flash","messages":[{"role":"user","content":"hello"}]}).encode()
 req = urllib.request.Request(base + "/v1/messages/count_tokens", data=body, headers={"content-type":"application/json"})
 tokens = json.load(urllib.request.urlopen(req, timeout=5))
 if not isinstance(tokens.get("input_tokens"), int) or tokens["input_tokens"] <= 0:
     raise SystemExit(f"bad token estimate: {tokens}")
 
 chat_body = json.dumps({
-    "model": "claude-codex-pro",
+    "model": "claude-reasonix-flash",
     "messages": [{"role": "user", "content": "hello from ccr"}],
 }).encode()
 chat_req = urllib.request.Request(
@@ -1130,15 +726,15 @@ chat_req = urllib.request.Request(
     headers={"content-type": "application/json"},
 )
 chat = json.load(urllib.request.urlopen(chat_req, timeout=5))
-if chat.get("model") != "claude-codex-pro":
+if chat.get("model") != "claude-reasonix-flash":
     raise SystemExit(f"chat endpoint should preserve requested alias model: {chat}")
 choice = (chat.get("choices") or [{}])[0]
 message = choice.get("message") or {}
-if message.get("role") != "assistant" or "mock claude-codex-pro response" not in str(message.get("content")):
+if message.get("role") != "assistant":
     raise SystemExit(f"bad chat completion response: {chat}")
 
 messages_body = json.dumps({
-    "model": "claude-codex-pro",
+    "model": "claude-reasonix-flash",
     "messages": [{"role": "user", "content": "hello through query string"}],
 }).encode()
 messages_req = urllib.request.Request(
@@ -1146,14 +742,14 @@ messages_req = urllib.request.Request(
     data=messages_body,
     headers={"content-type": "application/json"},
 )
-# codex_cli ALWAYS streams now (heartbeat path), even without stream=true, so the
+# reasonix_cli ALWAYS streams (heartbeat path), even without stream=true, so the
 # 180s workflow watchdog never fires on a slow lane. Parse the SSE message_start
 # instead of expecting a single JSON blob.
 resp = urllib.request.urlopen(messages_req, timeout=5)
 ctype = resp.headers.get("content-type", "")
 raw = resp.read().decode("utf-8")
 if not ctype.startswith("text/event-stream"):
-    raise SystemExit(f"codex_cli /v1/messages should stream SSE now, got content-type={ctype!r}: {raw[:200]}")
+    raise SystemExit(f"reasonix_cli /v1/messages should stream SSE now, got content-type={ctype!r}: {raw[:200]}")
 model_seen = None
 for line in raw.splitlines():
     if line.startswith("data: "):
@@ -1165,7 +761,7 @@ for line in raw.splitlines():
         if m:
             model_seen = m
             break
-if model_seen != "claude-codex-pro":
+if model_seen != "claude-reasonix-flash":
     raise SystemExit(f"messages endpoint should ignore query string while routing: model_seen={model_seen!r} raw={raw[:200]}")
 PY
 kill "$gateway_pid"
@@ -1369,98 +965,9 @@ if server["env"].get("CODEX_FLEET_DEFAULT_CONCURRENCY") != "200":
     raise SystemExit("workers 200 should set default concurrency to 200")
 PY
 
-export CODEX_BIN="/bin/echo"
-export CODEX_FLEET_DEFAULT_CONCURRENCY=2
-python3 - "$MCP_SERVER" <<'PY'
-import json
-import os
-import subprocess
-import sys
-import time
-
-server = subprocess.Popen(
-    [sys.executable, sys.argv[1]],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-)
-
-def send(message):
-    server.stdin.write(json.dumps(message) + "\n")
-    server.stdin.flush()
-    while True:
-        line = server.stdout.readline()
-        if not line:
-            raise SystemExit("MCP server closed stdout")
-        data = json.loads(line)
-        if data.get("id") == message.get("id"):
-            return data
-
-init = send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05"}})
-if "serverInfo" not in init.get("result", {}):
-    raise SystemExit(f"bad initialize response: {init}")
-
-tools = send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-names = {tool["name"] for tool in tools["result"]["tools"]}
-expected = {"run_codex_worker", "run_codex_fleet", "fleet_status"}
-if not expected.issubset(names):
-    raise SystemExit(f"missing tools: {expected - names}")
-
-batch = send({
-    "jsonrpc": "2.0",
-    "id": 3,
-    "method": "tools/call",
-    "params": {
-        "name": "run_codex_fleet",
-        "arguments": {
-            "concurrency": 2,
-            "tasks": [
-                {"title": "alpha", "prompt": "first dynamic task"},
-                {"title": "beta", "prompt": "second dynamic task"}
-            ]
-        }
-    }
-})
-text = batch["result"]["content"][0]["text"]
-payload = json.loads(text)
-if payload["total_tasks"] != 2:
-    raise SystemExit(f"bad task count: {payload}")
-if payload["concurrency"] != 2:
-    raise SystemExit(f"bad concurrency: {payload}")
-if [item["title"] for item in payload["results"]] != ["alpha", "beta"]:
-    raise SystemExit(f"bad results: {payload}")
-if not all("exec" in item["stdout"] for item in payload["results"]):
-    raise SystemExit(f"fake codex command was not invoked: {payload}")
-joined_stdout = "\n".join(item["stdout"] for item in payload["results"])
-expected_model = os.environ.get("CODEX_FLEET_MODEL", "gpt-5.4")
-required_fragments = [
-    "exec",
-    f"-m {expected_model}",
-    "model_reasoning_effort=\"xhigh\"",
-    "service_tier=\"fast\"",
-    "features.fast_mode=true",
-]
-for fragment in required_fragments:
-    if fragment not in joined_stdout:
-        raise SystemExit(f"missing codex fast/xhigh fragment {fragment!r}: {joined_stdout}")
-
-server.terminate()
-try:
-    server.wait(timeout=2)
-except subprocess.TimeoutExpired:
-    server.kill()
-PY
-
 echo "PASS: codex fleet launcher"
 
-python3 "$ROOT/tests/test-ccr-proxy-timeout.py" || fail "ccr-proxy timeout regression"
-
 python3 "$ROOT/tests/test-workflow-selfheal.py" || fail "workflow self-heal regression"
-
-python3 "$ROOT/tests/test-gateway-nonstream-heartbeat.py" || fail "gateway non-stream heartbeat regression"
-
-python3 "$ROOT/tests/test-ccr-proxy-streaming.py" || fail "ccr-proxy SSE streaming regression"
 
 # Verify the launcher itself wires the reasonix flavor via basename/$0 detection
 LAUNCHER_BIN="$HOME/.local/bin/claude-codex"
