@@ -85,51 +85,6 @@ def task_value(task: dict[str, Any], key: str, env_name: str, default: str) -> s
     return str(value)
 
 
-def build_codex_command(task: dict[str, Any]) -> tuple[list[str], str | None, str]:
-    prompt = str(task.get("prompt") or task.get("task") or "")
-    if not prompt.strip():
-        raise ValueError("task prompt is required")
-
-    cwd = task.get("cwd")
-    cwd_text = str(cwd) if cwd else None
-
-    model = task_value(task, "model", "CODEX_FLEET_MODEL", "gpt-5.4")
-    reasoning = task_value(task, "reasoning_effort", "CODEX_FLEET_REASONING", "xhigh")
-    service_tier = task_value(task, "service_tier", "CODEX_FLEET_SERVICE_TIER", "fast")
-    web_search = task_value(task, "web_search", "CODEX_FLEET_WEB_SEARCH", "live")
-    sandbox = task_value(task, "sandbox", "CODEX_FLEET_SANDBOX", "workspace-write")
-    approval = task_value(task, "approval_policy", "CODEX_FLEET_APPROVAL", "never")
-
-    skip_git = bool(task.get("skip_git_repo_check", default_bool("CODEX_FLEET_SKIP_GIT_REPO_CHECK", True)))
-
-    command = [
-        CODEX_BIN,
-        "exec",
-        "--sandbox",
-        sandbox,
-        "-m",
-        model,
-        "-c",
-        f'model_reasoning_effort="{reasoning}"',
-        "-c",
-        f'service_tier="{service_tier}"',
-        "-c",
-        "features.fast_mode=true",
-        "-c",
-        f'web_search="{web_search}"',
-        "-c",
-        f'approval_policy="{approval}"',
-    ]
-
-    if cwd_text:
-        command.extend(["-C", cwd_text])
-    if skip_git:
-        command.append("--skip-git-repo-check")
-
-    command.append("-")
-    return command, cwd_text, prompt
-
-
 async def run_one_task(task: dict[str, Any], index: int, batch_id: str, max_output_chars: int) -> dict[str, Any]:
     title = str(task.get("title") or task.get("name") or f"task-{index + 1}")
     started = time.monotonic()
