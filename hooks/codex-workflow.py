@@ -12,6 +12,20 @@ except Exception:  # noqa: BLE001 - self-heal is optional; never break rewriting
 
 
 MARKER = "__codexWorkflowAgent"
+PREFIX_GUIDE_TEXT = (
+    "PROMPT-CACHE NOTE for this Dynamic Workflow: each agent() lane runs on\n"
+    "DeepSeek via reasonix, where a cache MISS costs ~50x a hit. To keep lanes\n"
+    "cheap, assemble each lane's prompt prefix-stable:\n"
+    "1. Per-lane data scope: give a lane ONLY the data it needs (e.g. a verify\n"
+    "   lane gets the ONE finding it checks, not the whole findings set). Smaller\n"
+    "   unique payload = fewer missed tokens.\n"
+    "2. Shared-first ordering: put content COMMON across same-role lanes (the\n"
+    "   source file they all read, a fixed instruction template) at the START of\n"
+    "   the lane prompt; put the lane-specific task/data LAST.\n"
+    "3. Batch by shared data: when several lanes consume the same data set, give\n"
+    "   them the same set in the same order so they share a cached prefix.\n"
+    "This is advisory — correctness first; apply where it doesn't distort the work."
+)
 
 
 def find_matching_brace(text: str, open_index: int) -> int:
@@ -371,6 +385,8 @@ def main() -> int:
         )
     if selfheal_context:
         additional_context = additional_context + "\n\n" + selfheal_context
+    if os.getenv("CLAUDE_CODEX_WORKFLOW_PREFIX_GUIDE", "1").lower() in {"1", "true", "yes", "on"}:
+        additional_context = additional_context + "\n\n" + PREFIX_GUIDE_TEXT
 
     print(
         json.dumps(
