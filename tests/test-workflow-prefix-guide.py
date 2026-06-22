@@ -85,9 +85,27 @@ def test_mode_and_structure_preserved():
            "guide must be appended AFTER the mode context, not replace it")
 
 
+def test_guide_appends_in_each_mode():
+    for mode, marker in (
+        ("fleet", "Codex Fleet"),
+        ("router", "Claude Code Router routes"),
+        ("native", "native Claude Code subagents"),
+    ):
+        out = run_hook({
+            "CLAUDE_CODEX_WORKFLOW_PREFIX_GUIDE": "1",
+            "CLAUDE_CODEX_WORKFLOW_MODE": mode,
+        })
+        ctx = _ctx(out)
+        expect(marker in ctx, f"{mode} mode context text must be present")
+        expect("PROMPT-CACHE NOTE" in ctx, f"guide must append in {mode} mode")
+        expect(ctx.index(marker) < ctx.index("PROMPT-CACHE NOTE"),
+               f"guide must come after the {mode} mode text")
+
+
 if __name__ == "__main__":
     test_guide_present_when_on()
     test_guide_absent_when_off()
     test_guide_default_on()
     test_mode_and_structure_preserved()
+    test_guide_appends_in_each_mode()
     print("PASS: workflow prefix-cache guide")
