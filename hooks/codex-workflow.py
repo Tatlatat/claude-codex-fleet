@@ -356,18 +356,18 @@ def main() -> int:
         )
     elif mode == "router":
         additional_context = (
-            "Workflow scripts are rewritten by claude-codex so the real "
+            "Workflow scripts are rewritten by claude-reasonix so the real "
             "Claude Code Workflow/Dynamic Workflow runtime remains active, "
             "but each agent() lane runs as native Claude Code subagents. "
             "Claude Code Router routes the generated codex-* and deepseek-* "
-            "native Claude Code subagent types to claude-codex-pro or "
-            "claude-deepseek-pro. This hook does not auto-enable UltraCode."
+            "native Claude Code subagent types to claude-reasonix-flash "
+            "through the local gateway. This hook does not auto-enable UltraCode."
         )
     else:
         additional_context = (
-            "Workflow scripts are rewritten by claude-codex so each "
+            "Workflow scripts are rewritten by claude-reasonix so each "
             "agent() lane runs as native Claude Code subagents backed by "
-            "claude-codex-pro or claude-deepseek-pro through the local gateway."
+            "claude-reasonix-flash through the local gateway."
         )
     if selfheal_context:
         additional_context = additional_context + "\n\n" + selfheal_context

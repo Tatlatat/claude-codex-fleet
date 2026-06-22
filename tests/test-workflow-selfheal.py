@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tests for hooks/workflow_selfheal.py + the wrapper sentinel it relies on.
 
-Covers the auto-fix path (deepseek remap when no key), the report/context surface
-for a down gateway and a healthy gateway, fail-open behaviour, and that the JS
-wrapper actually honours the __claudeCodexForceCodexOnly sentinel.
+Covers the gateway-reachability probe, the reasonix-CLI check, fail-open
+behaviour, and that the JS wrapper honours the __claudeCodexForceCodexOnly
+sentinel. The codex-remap / DEEPSEEK_API_KEY probe has been removed.
 """
 from __future__ import annotations
 
@@ -43,42 +43,52 @@ def _clear_deepseek_env():
     os.environ.pop("CLAUDE_CODEX_DEEPSEEK_API_KEY", None)
 
 
-def test_remap_when_no_key():
+def test_no_codex_remap_no_key():
+    """The codex-remap path has been removed: no DEEPSEEK_API_KEY must NOT trigger
+    any script mutation or remap action — deepseek lanes pass through unchanged."""
     _clear_deepseek_env()
     new, ctx, rep = sh.preflight(SCRIPT, "router")
-    expect(rep["checks"]["deepseek_key"]["present"] is False, "should detect missing key")
-    expect(any(a["action"] == "remap_deepseek_to_codex" for a in rep["actions"]), "no remap action")
-    expect("__claudeCodexForceCodexOnly = true" in new, "sentinel not injected")
-    # Enforcement is the sentinel, not string surgery: the wrapper mapping table
-    # (and thus the 'deepseek-architecture' literal) must stay intact for clean
-    # revert once a key is present.
-    expect("SELF-HEAL applied" in ctx, "context missing self-heal note")
+    # No deepseek_key check in the report (that probe was removed with the remap).
+    expect("deepseek_key" not in rep["checks"],
+           f"deepseek_key check should be gone; got: {list(rep['checks'].keys())}")
+    # No remap action emitted.
+    expect(not any(a.get("action") == "remap_deepseek_to_codex" for a in rep["actions"]),
+           "remap_deepseek_to_codex action must not appear after codex remap removal")
+    # Sentinel NOT injected — script is returned verbatim.
+    expect("__claudeCodexForceCodexOnly" not in new,
+           "sentinel must not be injected when codex remap is absent")
+    # Deepseek lane literal survives intact.
+    expect("agentType:'deepseek-architecture'" in new or "agentType: 'deepseek-architecture'" in new,
+           "deepseek-architecture lane must be passed through unmodified")
 
 
-def test_sentinel_inserted_after_meta_not_before():
-    """Bug #1: the sentinel must NOT be prepended before `export const meta` —
-    Workflow requires meta to be the first statement or it is a syntax error."""
+def test_script_unchanged_no_sentinel():
+    """Preflight must return the script byte-for-byte unchanged (no sentinel,
+    no surgery) because the codex-remap logic no longer exists."""
     _clear_deepseek_env()
     new, _ctx, _rep = sh.preflight(SCRIPT, "router")
-    meta_pos = new.find("export const meta")
-    sentinel_pos = new.find("globalThis.__claudeCodexForceCodexOnly")
-    expect(meta_pos != -1, "meta block disappeared")
-    expect(sentinel_pos != -1, "sentinel not present")
-    expect(meta_pos < sentinel_pos,
-           f"sentinel (@{sentinel_pos}) must come AFTER meta (@{meta_pos}); "
-           f"prepending it breaks the meta-first rule. Head:\n{new[:120]!r}")
-    # meta must still be the very first non-whitespace token
+    expect(new == SCRIPT, f"script must be returned unchanged; diff:\n{new!r}\nvs\n{SCRIPT!r}")
+    # Specifically: sentinel is absent.
+    expect("globalThis.__claudeCodexForceCodexOnly" not in new,
+           "sentinel must not appear in passthrough script")
+    # meta block is still the first line.
     expect(new.lstrip().startswith("export const meta"),
-           f"script must still start with meta. Got: {new.lstrip()[:60]!r}")
+           f"meta must still be first; got: {new.lstrip()[:60]!r}")
 
 
-def test_no_remap_when_key_present():
+def test_script_passthrough_with_key_present():
+    """With DEEPSEEK_API_KEY set, script also passes through unchanged — no deepseek_key
+    check in report and no remap action (codex remap removed entirely)."""
     os.environ["DEEPSEEK_API_KEY"] = "sk-test"
     try:
         new, ctx, rep = sh.preflight(SCRIPT, "router")
-        expect(rep["checks"]["deepseek_key"]["present"] is True, "should see key present")
-        expect("__claudeCodexForceCodexOnly" not in new, "must not force codex-only with key")
-        expect(new.count("'deepseek-architecture'") == 1, "deepseek lane should be preserved")
+        expect("deepseek_key" not in rep["checks"],
+               "deepseek_key check must be gone even when key is present")
+        expect("__claudeCodexForceCodexOnly" not in new,
+               "sentinel must not appear; remap is gone")
+        expect(new.count("'deepseek-architecture'") == 1,
+               "deepseek-architecture lane must be preserved exactly once")
+        expect(new == SCRIPT, "script must be returned byte-for-byte unchanged")
     finally:
         _clear_deepseek_env()
 
@@ -268,9 +278,9 @@ def test_reasonix_cli_check_in_reasonix_flavor():
 
 
 def main() -> int:
-    test_remap_when_no_key()
-    test_sentinel_inserted_after_meta_not_before()
-    test_no_remap_when_key_present()
+    test_no_codex_remap_no_key()
+    test_script_unchanged_no_sentinel()
+    test_script_passthrough_with_key_present()
     test_gateway_down_reported()
     test_healthy_gateway_probe()
     test_gateway_detected_via_base_url_no_port_file()
