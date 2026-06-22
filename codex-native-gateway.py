@@ -85,26 +85,7 @@ def retryable_codex_cli_failure(detail: str) -> bool:
 
 
 def model_registry() -> dict[str, JSON]:
-    codex_backend = os.getenv("CLAUDE_CODEX_CODEX_BACKEND", "codex-cli").strip().lower()
-    codex_provider = "openai" if codex_backend in {"openai", "openai-compatible", "api"} else "codex_cli"
     return {
-        "claude-codex-pro": {
-            "display_name": os.getenv("CLAUDE_CODEX_CODEX_DISPLAY_NAME", "claude-codex-pro"),
-            "provider": codex_provider,
-            "target_model": env_first("CLAUDE_CODEX_CODEX_MODEL", "CODEX_FLEET_MODEL", default="gpt-5.4"),
-            "base_url": env_first("CLAUDE_CODEX_OPENAI_BASE_URL", "OPENAI_BASE_URL", default="https://api.openai.com/v1"),
-            "api_key": env_first("CLAUDE_CODEX_OPENAI_API_KEY", "OPENAI_API_KEY"),
-            "max_tokens_param": os.getenv("CLAUDE_CODEX_OPENAI_MAX_TOKENS_PARAM", "max_completion_tokens"),
-            "codex_bin": env_first("CODEX_BIN", default="codex"),
-        },
-        "claude-deepseek-pro": {
-            "display_name": os.getenv("CLAUDE_CODEX_DEEPSEEK_DISPLAY_NAME", "claude-deepseek-pro"),
-            "provider": "deepseek",
-            "target_model": env_first("CLAUDE_CODEX_DEEPSEEK_MODEL", "DEEPSEEK_MODEL", default="deepseek-chat"),
-            "base_url": env_first("CLAUDE_CODEX_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL", default="https://api.deepseek.com/v1"),
-            "api_key": env_first("CLAUDE_CODEX_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
-            "max_tokens_param": os.getenv("CLAUDE_CODEX_DEEPSEEK_MAX_TOKENS_PARAM", "max_tokens"),
-        },
         "claude-reasonix-flash": {
             "display_name": os.getenv("CLAUDE_CODEX_REASONIX_DISPLAY_NAME", "claude-reasonix-flash"),
             "provider": "reasonix_cli",
