@@ -54,6 +54,16 @@ PREFIX_GUIDE_TEXT = (
     "   machine runs ~14 lanes at once — use them. More small lanes beats fewer big\n"
     "   lanes on cost AND speed AND quality. Then ONE synthesize lane merges the\n"
     "   short per-lane summaries.\n"
+    "7. READ LANES RETURN SUMMARIES, NOT RAW FILES — the measured #1 lever against\n"
+    "   the 500K-token / 75% cache collapse (this is exactly how Claude Code reaches\n"
+    "   98%: Explore/Plan subagents read files in isolation and hand back a SHORT\n"
+    "   summary, so the main agent never ingests raw file dumps). Make each read\n"
+    "   lane's schema/output a CONDENSED summary (a few bullet points / a small\n"
+    "   structured object), NOT the file contents. A downstream lane should consume\n"
+    "   the previous lane's SUMMARY, never re-read the same file or paste its body\n"
+    "   into the next prompt. Raw file bytes are unique-content that can never\n"
+    "   cache-hit and that bloat every lane that carries them — keep them inside the\n"
+    "   one lane that read the file and out of every other lane.\n"
     "This is advisory — correctness first; apply where it doesn't distort the work."
 )
 
