@@ -64,6 +64,13 @@ PREFIX_GUIDE_TEXT = (
     "   into the next prompt. Raw file bytes are unique-content that can never\n"
     "   cache-hit and that bloat every lane that carries them — keep them inside the\n"
     "   one lane that read the file and out of every other lane.\n"
+    "8. WARM-UP LANE FOR SHARED-PREFIX REVIEW — when many lanes share one big\n"
+    "   byte-identical prefix (a review/audit over the same file set), dispatch ONE\n"
+    "   lane FIRST and await it, THEN fan out the rest. The first lane seeds DeepSeek's\n"
+    "   prefix cache so every later lane hits it warm. Measured: a cold 16-lane review\n"
+    "   burst weighted 98.4% (one cold primer dragging it), but with a warm-up lane\n"
+    "   first the same burst hit 99.66% (all lanes >=99.1%). Only worth it for the\n"
+    "   shared-prefix shape — unique-content lanes share nothing to warm.\n"
     "This is advisory — correctness first; apply where it doesn't distort the work."
 )
 
