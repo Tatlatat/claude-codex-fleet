@@ -737,6 +737,33 @@ def mapreduce_directive() -> str:
     )
 
 
+def context_budget_directive() -> str:
+    """A lane-invariant guard that caps how much a worker lane pulls into its own
+    context. Measured root cause of the 75-80% cache + slow lanes: a single lane
+    read 833 files / ran 659 commands, ballooning its prompt to 532K tokens — every
+    fresh file is uncached content, so cache craters and flash slows to a crawl.
+    This directive tells the lane to work within a read budget and SUMMARIZE as it
+    goes instead of dumping whole files, which is exactly the sub-agent
+    context-isolation pattern, applied in-prompt. Byte-identical across lanes so it
+    sits at the FRONT without breaking the shared prefix. Off via
+    CLAUDE_CODEX_GATEWAY_CONTEXT_GUARD=0."""
+    if os.getenv("CLAUDE_CODEX_GATEWAY_CONTEXT_GUARD", "1").lower() not in {"1", "true", "yes", "on"}:
+        return ""
+    max_reads = env_int("CLAUDE_CODEX_GATEWAY_MAX_FILE_READS", default=30)
+    return (
+        "CONTEXT BUDGET (work lean — this directly controls cost and speed):\n"
+        f"- Read at most ~{max_reads} files. If the task needs more, read the most "
+        "relevant ones first, SUMMARIZE what you found in your own words, and STOP "
+        "reading — do not dump whole files into your working context.\n"
+        "- Prefer targeted search (grep/glob for the exact symbol) over reading "
+        "entire files or whole directories.\n"
+        "- Never re-read a file you already read. Keep a running summary, not raw "
+        "file contents.\n"
+        "- When you have enough to answer, answer. Breadth without a budget wastes "
+        "tokens and time and produces worse results.\n"
+    )
+
+
 def _tool_choice_forces(payload: JSON, tool_name: str) -> bool:
     """True when the caller forced this exact tool via tool_choice (Anthropic
     {type:'tool',name} or OpenAI {type:'function',function:{name}}) or via a
@@ -807,6 +834,14 @@ def openai_messages_to_prompt(messages: list[JSON], tools: Any = None) -> str:
             rest.append(text)
 
     parts: list[str] = [*lead_system]
+    # Context-budget guard: a lane that can read files/run commands must work within
+    # a read budget so it doesn't balloon its own context (measured: 833 reads ->
+    # 532K tokens -> 75% cache). Lane-invariant, so it sits at the FRONT with the
+    # other shared blocks and does not break the prefix. Only for tool-capable lanes.
+    if tools:
+        guard = context_budget_directive()
+        if guard:
+            parts.append(guard)
     if generic_tools_block:
         parts.append(generic_tools_block)
     parts.extend(rest)

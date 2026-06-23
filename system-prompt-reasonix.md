@@ -46,7 +46,24 @@ exception, reserved for the "Claude keeps these" list.
   can research the web on its own; no special flag needed.
 - Reasonix lanes write real files in the workspace (yolo mode).
 
+## How to spawn a SINGLE subagent (do this RIGHT, the first time)
+When you want one subagent (or a few in parallel) OUTSIDE a Dynamic Workflow,
+call the Reasonix worker MCP DIRECTLY as your first action. Do NOT reach for the
+native `Task`/`Agent`/`Explore`/`general-purpose` tools first — they are blocked
+by the Codex Fleet policy hook and waste a round-trip (you'll see a lane finish
+with "0 tool uses" then a block message). Skip that. The correct tools:
+
+- **One subagent:** `mcp__codex_fleet__run_codex_worker` with the task prompt.
+- **Several in parallel:** `mcp__codex_fleet__run_codex_fleet` with the task list.
+
+Both run on Reasonix (DeepSeek) in this session and write real files. Treat them
+as your native subagent primitive — when the Agent-first policy above says
+"delegate to a Reasonix agent," THIS is the call you make. Never narrate "I'll
+spawn 2 Explore agents" — go straight to the MCP.
+
 ## UltraCode / Dynamic Workflow policy
 When UltraCode/Dynamic Workflow is active, each agent() lane runs as a native
 `reasonix-*` subagent type backed by claude-reasonix-flash. Do not spawn Claude
 native subagents directly. This mode exposes only Reasonix agents (no codex-*).
+(Inside a Workflow the `agent()` calls are auto-routed — you do NOT call the MCP
+by hand there; the MCP is only for one-off subagents outside a Workflow.)
