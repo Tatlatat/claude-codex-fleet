@@ -670,14 +670,50 @@ def _schema_has_nested_array_of_objects(schema: Any) -> bool:
     return False
 
 
-def is_heavy_synthesis(tools: Any, prompt_len: int) -> bool:
-    """A forced StructuredOutput whose schema is nested AND whose prompt is large
-    is a 'heavy synthesis' lane that flash loops on — route it to the map-reduce
-    skill. Disabled by CLAUDE_CODEX_GATEWAY_MAPREDUCE_SYNTHESIS=0."""
+# A lane is a genuine SYNTHESIZE/merge step (where map-reduce belongs) only when its
+# prompt is about merging MANY already-collected items into one structured result.
+# A READER lane (read these files and report) ALSO carries a nested schema + a long
+# prompt, so size+schema alone misclassifies readers as heavy-synthesis and wrongly
+# injects the map-reduce skill into them. Gate on explicit synthesize intent so the
+# skill fires ONLY in the Synthesize phase.
+_SYNTHESIS_INTENT_RE = re.compile(
+    r"\b(synthe|merge|combine|aggregate|consolidate|reduce|rank|dedup|"
+    r"into one|into a single|across (the |all )?(items|findings|claims|sources|results)|"
+    r"the following (items|findings|claims|sources|results))",
+    re.IGNORECASE,
+)
+# A reader lane is the opposite — it ingests source material rather than merging it.
+_READER_INTENT_RE = re.compile(
+    r"\b(read (the|these|all)|read:|open the file|inspect the (file|repo|code)|"
+    r"use webfetch|fetch (the|this) (page|url|source)|enumerate|list what'?s in)",
+    re.IGNORECASE,
+)
+
+
+def is_synthesis_prompt(prompt_text: str) -> bool:
+    """True when the prompt's intent is to MERGE many items (a synthesize step),
+    not to READ source material. Reader-intent wins ties so we never misfire the
+    map-reduce skill into a file/web reader lane."""
+    if not prompt_text:
+        return False
+    if _READER_INTENT_RE.search(prompt_text) and not _SYNTHESIS_INTENT_RE.search(prompt_text):
+        return False
+    return bool(_SYNTHESIS_INTENT_RE.search(prompt_text))
+
+
+def is_heavy_synthesis(tools: Any, prompt_len: int, prompt_text: str = "") -> bool:
+    """A forced StructuredOutput whose schema is nested, whose prompt is large, AND
+    whose intent is genuinely to SYNTHESIZE/merge many items is a 'heavy synthesis'
+    lane that flash loops on — route it to the map-reduce skill. The synthesis-intent
+    gate keeps the skill OUT of reader lanes (which also have nested schemas + long
+    prompts). Disabled by CLAUDE_CODEX_GATEWAY_MAPREDUCE_SYNTHESIS=0."""
     if os.getenv("CLAUDE_CODEX_GATEWAY_MAPREDUCE_SYNTHESIS", "1").lower() not in {"1", "true", "yes", "on"}:
         return False
     min_len = env_int("CLAUDE_CODEX_GATEWAY_MAPREDUCE_MIN_PROMPT", default=20000)
     if prompt_len < min_len:
+        return False
+    # Map-reduce is a Synthesize-phase tool only. A reader lane must never get it.
+    if not is_synthesis_prompt(prompt_text):
         return False
     for entry in tool_schema_entries(tools):
         if is_structured_output_tool_name(str(entry.get("name") or "")):
@@ -780,7 +816,7 @@ def openai_messages_to_prompt(messages: list[JSON], tools: Any = None) -> str:
         # in-engine map-reduce skill instead of looping on a single oversized turn.
         # Appended AFTER the structured instruction so the schema stays LAST.
         assembled_len = sum(len(p) for p in parts)
-        if is_heavy_synthesis(tools, assembled_len):
+        if is_heavy_synthesis(tools, assembled_len, "\n\n".join(parts)):
             parts.append(mapreduce_directive())
     return "\n\n".join(parts).strip() or "Complete the requested Codex worker task."
 
