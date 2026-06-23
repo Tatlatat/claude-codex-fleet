@@ -1639,6 +1639,12 @@ class GatewayError(Exception):
         self.message = message
 
 
+class ClientGone(Exception):
+    """The streaming client disconnected mid-response (BrokenPipe/ConnectionReset).
+    Normal, not an error — the handler stops streaming and does NOT try to write an
+    error body down the dead socket."""
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "claude-codex-gateway/0.1"
 
@@ -1750,19 +1756,41 @@ class Handler(BaseHTTPRequestHandler):
                 self.forward_anthropic(payload)
                 return
             self.send_json(404, {"type": "error", "error": {"type": "not_found_error", "message": self.path}})
+        except (ClientGone, BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Client hung up mid-response. Nothing to send (the socket is dead) and
+            # nothing to log — this is normal streaming churn, not a gateway fault.
+            return
         except GatewayError as exc:
-            self.send_error_json(exc)
+            self._safe_send_error(exc)
         except Exception as exc:
             if os.getenv("CLAUDE_CODEX_GATEWAY_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
                 traceback.print_exc(file=sys.stderr)
-            self.send_error_json(GatewayError(500, "api_error", str(exc)))
+            self._safe_send_error(GatewayError(500, "api_error", str(exc)))
+
+    def _safe_send_error(self, exc: "GatewayError") -> None:
+        # Sending the error body can itself hit a dead socket (the client that caused
+        # the error may already be gone). Never let that raise a second, noisy
+        # traceback — the original error is what matters.
+        try:
+            self.send_error_json(exc)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, ValueError):
+            return
 
     def send_sse_event(self, event: str, data: Any) -> None:
-        self.wfile.write(f"event: {event}\n".encode("utf-8"))
-        self.wfile.write(b"data: ")
-        self.wfile.write(json_bytes(data))
-        self.wfile.write(b"\n\n")
-        self.wfile.flush()
+        # A streaming client (CCR / the Claude Code workflow runtime) routinely
+        # disconnects mid-stream — on timeout, cancel, or when a lane is superseded.
+        # The socket write then raises BrokenPipe/ConnectionReset. That is NORMAL,
+        # not a gateway error: swallow it and signal the caller to stop streaming so
+        # we don't spew 272 tracebacks (measured in prod) or try to send an error
+        # body down a dead socket. ClientGone is caught by the streaming loop.
+        try:
+            self.wfile.write(f"event: {event}\n".encode("utf-8"))
+            self.wfile.write(b"data: ")
+            self.wfile.write(json_bytes(data))
+            self.wfile.write(b"\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+            raise ClientGone() from exc
 
     def wait_for_stream_response(self, producer: Any, on_keepalive: Any = None) -> Any:
         result_queue: queue.Queue = queue.Queue(maxsize=1)
@@ -1785,11 +1813,14 @@ class Handler(BaseHTTPRequestHandler):
                 # fire its no-progress interrupt while codex exec is still buffering.
                 # A bare ": keepalive" SSE comment keeps the socket warm but is
                 # invisible to that watchdog, so it is only the fallback.
-                if on_keepalive is not None:
-                    on_keepalive()
-                else:
-                    self.wfile.write(b": keepalive\n\n")
-                    self.wfile.flush()
+                try:
+                    if on_keepalive is not None:
+                        on_keepalive()
+                    else:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError) as exc:
+                    raise ClientGone() from exc
                 continue
             if kind == "error":
                 raise value
