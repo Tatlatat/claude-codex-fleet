@@ -635,11 +635,16 @@ def is_heavy_synthesis(tools: Any, prompt_len: int) -> bool:
 
 def mapreduce_directive() -> str:
     return (
-        "\n\nLARGE-SYNTHESIS NOTE: this is a big merge/summarize task with a nested "
-        "JSON schema. Do NOT attempt it in one turn — call "
-        "run_skill({name: \"map-reduce-synthesis\", arguments: <the full task above>}) "
-        "to split the items, summarize each group in an isolated subagent, then merge "
-        "into the final JSON object. Return the skill's JSON result as your answer."
+        "\n\n========================================\n"
+        "MANDATORY FIRST ACTION — DO THIS BEFORE ANYTHING ELSE:\n"
+        "This synthesis is too large to answer in one turn (it overflows and breaks "
+        "the JSON). You MUST delegate it. Your VERY FIRST tool call must be exactly:\n"
+        "  run_skill({\"name\": \"map-reduce-synthesis\", \"arguments\": \"<paste the ENTIRE task and item block from above here>\"})\n"
+        "Do NOT try to write the JSON yourself. Do NOT summarize the items yourself. "
+        "Call run_skill now with the full task as `arguments`, wait for its JSON result, "
+        "and return that JSON object verbatim as your answer. The skill 'map-reduce-synthesis' "
+        "is in your pinned Skills index.\n"
+        "========================================"
     )
 
 
