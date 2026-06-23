@@ -86,6 +86,50 @@ def codex_cli_semaphore() -> threading.BoundedSemaphore:
 _PRIME_LOCK = threading.Lock()
 _PRIME_GATES: dict[str, threading.Event] = {}
 
+# --- Staggered prime serialization -----------------------------------------
+# DeepSeek persists a prefix only AFTER a request finishes — so when N lanes of
+# one prefix family hit concurrently, the first 2-3 race the persist and all miss
+# (measured: 3 early lanes at 65-83% while later ones hit 97-99%). To warm the
+# prefix deterministically, the first PRIME_SERIAL lanes of a family take a
+# per-key lock and run ONE AT A TIME (each ~persists more of the shared prefix
+# before the next); lanes past that window run in parallel against the now-warm
+# prefix. Costs ~one-lane latency up front, zero extra tokens.
+_PRIME_SERIAL_LOCK = threading.Lock()
+_PRIME_SERIAL_COUNTS: dict[str, int] = {}
+_PRIME_SERIAL_LOCKS: dict[str, threading.Lock] = {}
+
+
+def reset_prime_state(key: str) -> None:
+    """Test/diagnostic helper — clear the serial counter+lock for a key."""
+    with _PRIME_SERIAL_LOCK:
+        _PRIME_SERIAL_COUNTS.pop(key, None)
+        _PRIME_SERIAL_LOCKS.pop(key, None)
+
+
+def serial_lock_for(key: str) -> threading.Lock:
+    with _PRIME_SERIAL_LOCK:
+        lk = _PRIME_SERIAL_LOCKS.get(key)
+        if lk is None:
+            lk = threading.Lock()
+            _PRIME_SERIAL_LOCKS[key] = lk
+        return lk
+
+
+def acquire_serial_slot(key: str) -> bool:
+    """True if this caller is within the first PRIME_SERIAL lanes of the family and
+    must run serially (hold serial_lock_for(key) while running, release when done).
+    False if past the window — run in parallel."""
+    n = env_int("CLAUDE_CODEX_GATEWAY_PRIME_SERIAL", default=3)
+    if n <= 0:
+        return False
+    with _PRIME_SERIAL_LOCK:
+        c = _PRIME_SERIAL_COUNTS.get(key, 0)
+        if c >= n:
+            return False
+        _PRIME_SERIAL_COUNTS[key] = c + 1
+        return True
+
+
 # --- Per-lane loop breaker -------------------------------------------------
 # A lane whose model never emits valid JSON gets re-driven turn-by-turn by Claude
 # Code, each turn re-feeding history (input 27K->227K, measured). We count repeats
@@ -1025,6 +1069,18 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     # own directory (which contains node) to the child PATH so `env node`
     # resolves regardless of how the gateway itself was started.
     reasonix_env = dict(os.environ)
+    # Session isolation (ROOT CAUSE of erratic fan-out cache): stock reasonix acp
+    # persists each spawn's session under a MINUTE-granular name
+    # (`acp-${timestampSuffix()}`, 12-char ISO slice) and the CacheFirstLoop ctor
+    # loadSessionMessages() RESUMES any same-name session. So every lane spawning in
+    # the same wall-clock minute inherits all prior same-minute lanes' full
+    # conversations as prior context — measured: in_tok inflates ~+10829 tok/lane,
+    # cache swings 60-94% by collision. Default ephemeral sessions (session:null, no
+    # load/append) so each stateless fan-out lane is fully isolated. Requires the
+    # one-line dist patch that honors REASONIX_ACP_EPHEMERAL_SESSION; kill-switch:
+    # set CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL=0 to restore stock behavior.
+    if env_first("CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL", default="1") not in {"0", "false", "no", "off"}:
+        reasonix_env.setdefault("REASONIX_ACP_EPHEMERAL_SESSION", "1")
     _bin_dir = os.path.dirname(os.path.abspath(reasonix_bin)) if os.path.sep in reasonix_bin else ""
     if _bin_dir and os.path.exists(os.path.join(_bin_dir, "node")):
         _cur_path = reasonix_env.get("PATH", "")
@@ -1313,16 +1369,44 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
                 }) + "\n")
         except Exception:
             pass
+    # Staggered serialization: the prime gate releases ALL waiters at once when it
+    # opens, so the first few still fire concurrently and race the prefix persist
+    # (measured: 3 early lanes 65-83% while later lanes 97-99%). To eliminate that,
+    # the first PRIME_SERIAL lanes of the family take a per-key lock and run ONE AT
+    # A TIME — each finishes and persists more of the shared prefix before the next
+    # starts. Lanes past the window skip the lock and run in parallel against the
+    # now-warm prefix. The primer is lane 0 of its family, so it holds the slot too;
+    # waiters that wake hold subsequent slots and serialize behind it.
+    prime_key = prefix_prime_key(prompt)
+    serial_slot = acquire_serial_slot(prime_key)
+    serial_lock = serial_lock_for(prime_key) if serial_slot else None
+
     if prime_gate is not None and not is_primer:
         wait_s = env_float("CLAUDE_CODEX_GATEWAY_PRIME_WAIT_SECONDS", default=20.0)
         opened = prime_gate.wait(timeout=wait_s)
-        if opened:
-            # Post-open grace settle: DeepSeek persists the primed prefix in
-            # "seconds" (per its cache docs), so let it finish writing before the
-            # waiters fire, or they race the primer and miss the shared prefix.
-            grace = env_float("CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", default=1.5)
+        # Post-open grace settle: DeepSeek persists the primed prefix in "seconds"
+        # (per its cache docs), so let it finish writing before the waiters fire, or
+        # they race the primer and miss the shared prefix. Measured: 1.5s let early
+        # waiters race the primer (cache 65-81%); a few seconds lifts them to ~99%.
+        # SKIP grace for serial-slot lanes: the per-key serial lock already forces
+        # them to run strictly after the prior lane completes + its settle sleep, so
+        # an extra grace here only adds dead wall-clock without improving the cache.
+        if opened and serial_slot is False:
+            grace = env_float("CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", default=4.0)
             if grace > 0:
-                _time.sleep(min(grace, 5.0))
+                _time.sleep(min(grace, 15.0))
+    if serial_slot and os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "").lower() in {"1", "true", "yes", "on"}:
+        try:
+            _sdir = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+                default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
+            _sdir.mkdir(parents=True, exist_ok=True)
+            with open(_sdir / "prime-trace.jsonl", "a", encoding="utf-8") as _pf:
+                _pf.write(json.dumps({
+                    "ts": _time.time(), "event": "serial_slot",
+                    "prime_key": prime_key, "prompt_len": len(prompt),
+                }) + "\n")
+        except Exception:
+            pass
 
     def _run_attempts() -> tuple[str, JSON]:
         last_exc: Exception | None = None
@@ -1338,9 +1422,24 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
             raise last_exc
         raise GatewayError(502, "reasonix_acp_error", "reasonix acp produced no result")
 
-    with semaphore:
+    def _run_serialized() -> tuple[str, JSON]:
+        # A serial-slot lane runs under the per-key lock so only one family member
+        # runs at a time; after it completes it sleeps a short settle so DeepSeek
+        # persists what this lane just warmed before the next serial lane starts.
+        if serial_lock is None:
+            return _run_attempts()
+        serial_lock.acquire()
         try:
             return _run_attempts()
+        finally:
+            settle = env_float("CLAUDE_CODEX_GATEWAY_PRIME_SERIAL_SETTLE_SECONDS", default=4.0)
+            if settle > 0:
+                _time.sleep(min(settle, 15.0))
+            serial_lock.release()
+
+    with semaphore:
+        try:
+            return _run_serialized()
         finally:
             # The primer must release waiters whether it succeeded or failed, so a
             # failed prime can't deadlock the burst. The warmed prefix (if any)

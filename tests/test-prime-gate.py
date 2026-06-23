@@ -35,8 +35,8 @@ def test_key_groups_lanes_sharing_leading_head():
 def test_grace_env_default():
     # The post-open grace setting must exist and default to 1.5.
     os.environ.pop("CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", None)
-    expect(abs(gw.env_float("CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", default=1.5) - 1.5) < 1e-9,
-           "grace default is 1.5")
+    expect(abs(gw.env_float("CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", default=4.0) - 4.0) < 1e-9,
+           "grace default is 4.0")
 
 
 def test_primer_then_waiter_roles():
