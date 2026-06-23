@@ -179,7 +179,14 @@ def run_all(port: int) -> dict:
     # measured burst reflects STEADY-STATE (the realistic state of any review session
     # after its first lane) rather than paying the one-time cold-primer penalty. This
     # is a workflow-level warm-up (a real review lane), not a gateway seed call.
-    lane(port, SHARED_BLOCK + "\nLANE concern: warm-up.")
+    # VERIFY the warm-up actually succeeded (non-empty): if it returns empty/errors,
+    # the prefix is NOT seeded and the whole burst goes cold (measured: a failed
+    # warm-up dropped a run to ~94.9%). Retry the warm-up up to 3x until it lands a
+    # real reply, so a flaky single warm-up can't cold-fail the burst.
+    for _ in range(3):
+        wu = lane(port, SHARED_BLOCK + "\nLANE concern: warm-up.")
+        if not wu.get("errored") and not wu.get("empty"):
+            break
     time.sleep(3)
     t_review = time.time()
     rprompts = [SHARED_BLOCK + f"\nLANE concern: {d}." for d in dims]

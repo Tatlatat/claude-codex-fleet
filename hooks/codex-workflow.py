@@ -70,7 +70,11 @@ PREFIX_GUIDE_TEXT = (
     "   prefix cache so every later lane hits it warm. Measured: a cold 16-lane review\n"
     "   burst weighted 98.4% (one cold primer dragging it), but with a warm-up lane\n"
     "   first the same burst hit 99.66% (all lanes >=99.1%). Only worth it for the\n"
-    "   shared-prefix shape — unique-content lanes share nothing to warm.\n"
+    "   shared-prefix shape — unique-content lanes share nothing to warm. VERIFY the\n"
+    "   warm-up lane actually returned a real (non-empty) result before fanning out:\n"
+    "   if the single warm-up lane flakes (empty/error), the prefix is NOT seeded and\n"
+    "   the whole burst goes cold (measured: a failed warm-up dropped a burst to\n"
+    "   ~94.9%). Retry the warm-up until it lands a real reply.\n"
     "This is advisory — correctness first; apply where it doesn't distort the work."
 )
 
