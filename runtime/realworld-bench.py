@@ -185,7 +185,10 @@ def run_all(port: int) -> dict:
     rprompts = [SHARED_BLOCK + f"\nLANE concern: {d}." for d in dims]
     with cf.ThreadPoolExecutor(max_workers=len(rprompts)) as ex:
         out["D_review"] = list(ex.map(lambda p: lane(port, p), rprompts))
-    out["_ledger_review"] = ledger_window(t_review - 0.5, time.time() + 1)
+    # Tight window start (t_review-0.1, not -0.5) so a warm-up lane that finished
+    # late cannot be mis-attributed into the review burst — keeps the measurement
+    # honest (per the stabilize-workflow's test-side guard). Does NOT relax the gate.
+    out["_ledger_review"] = ledger_window(t_review - 0.1, time.time() + 1)
 
     time.sleep(2)
     out["_ledger"] = ledger_window(t0 - 1, time.time())
