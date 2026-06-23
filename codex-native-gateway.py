@@ -1494,16 +1494,33 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         except Exception:
             pass
 
+    retry_empty = os.getenv("CLAUDE_CODEX_GATEWAY_RETRY_EMPTY", "1").lower() in {"1", "true", "yes", "on"}
+
     def _run_attempts() -> tuple[str, JSON]:
         last_exc: Exception | None = None
+        last_result: tuple[str, JSON] | None = None
         for attempt in range(1, max_attempts + 1):
             try:
                 gateway_trace("reasonix_acp_attempt", model=model, attempt=attempt)
-                return _attempt()
+                result = _attempt()
             except GatewayError as exc:
                 last_exc = exc
                 if exc.error_type == "reasonix_timeout":
                     raise
+                continue
+            # reasonix-flash intermittently returns empty/whitespace text as a
+            # "successful" response (~1/15 lanes measured). That produces a hollow
+            # workflow lane — a lost task. Treat an empty reply as a retryable miss so
+            # a transient empty does not silently drop the lane; keep the last empty
+            # result as the fallback if every attempt comes back empty (the hollow
+            # guard then surfaces it). Off via CLAUDE_CODEX_GATEWAY_RETRY_EMPTY=0.
+            if retry_empty and not str(result[0]).strip() and attempt < max_attempts:
+                gateway_trace("reasonix_acp_empty_retry", model=model, attempt=attempt)
+                last_result = result
+                continue
+            return result
+        if last_result is not None:
+            return last_result
         if last_exc:
             raise last_exc
         raise GatewayError(502, "reasonix_acp_error", "reasonix acp produced no result")
