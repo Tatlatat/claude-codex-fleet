@@ -227,6 +227,15 @@ _LEVER_ENV_MAP: dict[str, str] = {
     # predicts which files the lanes will read and logs precision, so cache/tokens
     # must be UNCHANGED vs baseline. The only output is the prediction-precision number.
     "PREFETCH_CONTEXT": "CLAUDE_REASONIX_PREFETCH_CONTEXT",
+    # Lever D — pre-index. Build a semantic index ONCE (gateway is the sole build
+    # trigger; per-lane is read-only indexCompatible()), exposed via the EXISTING
+    # semantic_search query tool — NO prefix injection, so it sidesteps
+    # byte-stability. Read by the GATEWAY (build_preindex). FAIL-OPEN when no
+    # embedding model is reachable. UNMEASURED this round (owner pulled NO embed
+    # model — Ollama runs with 0 models), so D stays OFF and is deliberately NOT
+    # in DEFAULT_ON until a model exists and Scenario D measures the read-lane
+    # input drop with zero output effect.
+    "PREINDEX": "CLAUDE_REASONIX_PREINDEX",
 }
 
 # Levers whose env var is NOT a 1/0 flag but takes a string VALUE.

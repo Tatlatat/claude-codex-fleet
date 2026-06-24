@@ -58,6 +58,160 @@ def env_float(*names: str, default: float) -> float:
         return default
 
 
+def env_truthy(*names: str, default: str = "") -> bool:
+    return env_first(*names, default=default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# --- Lever D — pre-index (CLAUDE_REASONIX_PREINDEX, default OFF) ----------------
+# Build a semantic index ONCE per codebase so read-exploration lanes can QUERY it
+# via the EXISTING `semantic_search` tool instead of reading raw files. The index
+# adds NO prefix bytes (it's a side store + a query tool that only registers when
+# an index already exists), so the immutable prefix stays byte-stable.
+#
+# The GATEWAY is the SOLE build trigger: it calls build_preindex(cwd) once, up
+# front. Per-lane shims NEVER build — they only check `indexCompatible()`
+# read-only (via buildCodeToolset -> bootstrapSemanticSearchInCodeMode). This
+# avoids the JSONL append race where two concurrent lanes both call buildIndex
+# and corrupt index.jsonl.
+#
+# FAIL-OPEN is mandatory: when PREINDEX is off (default) this is a no-op; when on
+# but no embedding provider/model is reachable (the current state — Ollama runs
+# with 0 models), build_preindex logs and returns gracefully. It MUST NOT raise,
+# MUST NOT block lanes, MUST NOT break the gateway.
+_PREINDEX_LOCK = threading.Lock()
+_PREINDEX_DONE: set[str] = set()
+
+
+def preindex_enabled() -> bool:
+    return env_truthy("CLAUDE_REASONIX_PREINDEX", default="0")
+
+
+def _preindex_node_bin() -> str:
+    return env_first("CLAUDE_REASONIX_NODE_BIN", "NODE_BIN", default="node")
+
+
+def _preindex_engine_dist() -> str | None:
+    explicit = env_first("REASONIX_ENGINE_DIST", default="")
+    if explicit and os.path.exists(explicit):
+        return explicit
+    install_home = env_first(
+        "CLAUDE_REASONIX_FLEET_INSTALL_HOME", "CLAUDE_CODEX_FLEET_INSTALL_HOME",
+        default=os.path.dirname(os.path.abspath(__file__)),
+    )
+    vendored = os.path.join(install_home, "vendor", "reasonix-engine", "dist", "index.js")
+    return vendored if os.path.exists(vendored) else None
+
+
+# Inline ESM driver: import the vendored fork dist and call the re-exported
+# buildIndex(root, opts). Embedding provider/model/baseUrl come from env so NO
+# secret is interpolated into the script source. Any throw (no provider, probe
+# failure, etc.) is printed and exits non-zero — the Python caller treats that as
+# fail-open. Default provider "ollama" lets buildIndex's own probeEmbeddingProvider
+# decide reachability and raise if a model is absent.
+_PREINDEX_NODE_SCRIPT = r"""
+import { createRequire } from "node:module";
+// The vendored fork engine is a tsup `noExternal` bundle that interops with a
+// few CJS-only deps via an esbuild `__require` shim resolving to the global
+// `require`. An ESM `-e` host has no ambient require, so provide the canonical
+// bridge before loading the bundle (same as engine/run-lane.mjs).
+if (typeof globalThis.require !== "function") {
+  globalThis.require = createRequire(import.meta.url);
+}
+const { buildIndex, indexCompatible } = await import(process.env.REASONIX_ENGINE_DIST);
+const root = process.env.REASONIX_PREINDEX_ROOT;
+const provider = (process.env.REASONIX_EMBED_PROVIDER || "ollama").trim();
+const model = (process.env.REASONIX_EMBED_MODEL || "").trim();
+const baseUrl = (process.env.REASONIX_EMBED_BASE_URL || "").trim();
+const opts = {};
+if (provider === "openai-compat") {
+  opts.provider = "openai-compat";
+  if (baseUrl) opts.baseUrl = baseUrl;
+  if (model) opts.model = model;
+  const key = (process.env.REASONIX_EMBED_API_KEY || "").trim();
+  if (key) opts.apiKey = key;
+} else {
+  opts.provider = "ollama";
+  if (baseUrl) opts.baseUrl = baseUrl;
+  if (model) opts.model = model;
+}
+try {
+  const res = await buildIndex(root, opts);
+  // A "successful" build can still yield NO usable index when the embedding
+  // model is absent: Ollama is reachable (so probeEmbeddingProvider doesn't
+  // throw) but every chunk is skipped ("model not pulled"), so chunksAdded==0
+  // and no compatible index meta is written. Tie success to the SAME read-only
+  // check the per-lane path uses (indexCompatible) — if it's not compatible,
+  // exit 4 so the gateway treats it as fail-open (no model), not a real index.
+  const compatible = await indexCompatible(root, {
+    provider: opts.provider,
+    model: opts.model,
+  });
+  if (!compatible) {
+    process.stderr.write(
+      "preindex produced no usable index (no reachable embedding model; chunksAdded=" +
+        (res && res.chunksAdded != null ? res.chunksAdded : "?") + ")\n",
+    );
+    process.exit(4);
+  }
+  process.stdout.write(JSON.stringify({ ok: true, ...res }) + "\n");
+} catch (e) {
+  process.stderr.write("preindex build failed: " + (e && e.message ? e.message : String(e)) + "\n");
+  process.exit(3);
+}
+"""
+
+
+def build_preindex(cwd: str | None = None) -> bool:
+    """Lever D: build the semantic index ONCE for `cwd`. Returns True iff an index
+    was built. FAIL-OPEN — never raises; logs and returns False on any problem
+    (PREINDEX off, no node, no engine dist, no embedding model, timeout, error)."""
+    if not preindex_enabled():
+        return False
+    root = os.path.abspath(cwd or env_first(
+        "CLAUDE_REASONIX_GATEWAY_CWD", "CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd()))
+    with _PREINDEX_LOCK:
+        if root in _PREINDEX_DONE:
+            return False
+        # Mark BEFORE building so a concurrent caller never double-triggers even if
+        # the build raises — the gateway is the sole trigger and a failed build
+        # fails open (we don't retry-storm; a later restart re-attempts).
+        _PREINDEX_DONE.add(root)
+    dist = _preindex_engine_dist()
+    if not dist:
+        gateway_trace("preindex_skip", reason="no_engine_dist", root=root)
+        print("[preindex] skipped: vendored engine dist not found (fail-open)", file=sys.stderr, flush=True)
+        return False
+    node_bin = _preindex_node_bin()
+    timeout = env_float("CLAUDE_REASONIX_PREINDEX_TIMEOUT", default=120.0)
+    child_env = dict(os.environ)
+    # The inline ESM driver reads the dist path + root from env (no interpolation).
+    child_env["REASONIX_ENGINE_DIST"] = dist
+    child_env["REASONIX_PREINDEX_ROOT"] = root
+    try:
+        proc = subprocess.run(
+            [node_bin, "--input-type=module", "-e", _PREINDEX_NODE_SCRIPT],
+            input="", capture_output=True, text=True, cwd=root, env=child_env,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        gateway_trace("preindex_fail_open", reason="timeout", root=root, timeout=timeout)
+        print(f"[preindex] fail-open: build timed out after {timeout:g}s (lanes proceed read-only)", file=sys.stderr, flush=True)
+        return False
+    except OSError as exc:
+        gateway_trace("preindex_fail_open", reason="spawn_error", root=root, error=str(exc))
+        print(f"[preindex] fail-open: could not start node ({exc}); lanes proceed read-only", file=sys.stderr, flush=True)
+        return False
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip().splitlines()
+        msg = detail[-1] if detail else f"node exited {proc.returncode}"
+        gateway_trace("preindex_fail_open", reason="build_error", root=root, detail=msg)
+        print(f"[preindex] fail-open: no reachable embedding provider/model ({msg}); lanes proceed read-only", file=sys.stderr, flush=True)
+        return False
+    gateway_trace("preindex_built", root=root, stdout=(proc.stdout or "").strip()[:300])
+    print(f"[preindex] built semantic index for {root}", file=sys.stderr, flush=True)
+    return True
+
+
 def gateway_trace(event: str, **fields: Any) -> None:
     if os.getenv("CLAUDE_REASONIX_GATEWAY_TRACE", os.getenv("CLAUDE_CODEX_GATEWAY_TRACE", "")).lower() not in {"1", "true", "yes", "on"}:
         return
@@ -1727,6 +1881,16 @@ def run_reasonix_acp(prompt: str, config: JSON, max_output_tokens: int | None = 
     budget = env_first("CLAUDE_REASONIX_REASONIX_BUDGET", "CLAUDE_CODEX_REASONIX_BUDGET", default="0.05")
     timeout = float(env_first("CLAUDE_REASONIX_GATEWAY_TIMEOUT", "CLAUDE_CODEX_GATEWAY_CODEX_TIMEOUT", "REASONIX_FLEET_TIMEOUT_SECONDS", default="600"))
     cwd = env_first("CLAUDE_REASONIX_GATEWAY_CWD", "CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd())
+    # Lever D — pre-index (default OFF). The gateway is the SOLE build trigger:
+    # build the semantic index ONCE per codebase here, before any lane spawns, so
+    # per-lane shims only check `indexCompatible()` read-only (no JSONL append
+    # race). FAIL-OPEN: build_preindex never raises and is a no-op when PREINDEX is
+    # off or no embedding model is reachable — the lane proceeds either way.
+    if preindex_enabled():
+        try:
+            build_preindex(cwd)
+        except Exception as _preindex_exc:  # belt-and-suspenders: must never block lanes
+            gateway_trace("preindex_fail_open", reason="unexpected", error=str(_preindex_exc))
     max_attempts = max(1, env_int("CLAUDE_REASONIX_GATEWAY_MAX_ATTEMPTS", "CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS", default=3))
     max_iter = max(1, env_int("CLAUDE_REASONIX_GATEWAY_MAX_ITER_PER_TURN", "CLAUDE_CODEX_GATEWAY_MAX_ITER_PER_TURN", default=50))
     semaphore = reasonix_cli_semaphore()
