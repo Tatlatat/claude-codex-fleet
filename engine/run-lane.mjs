@@ -99,8 +99,8 @@ try {
   fail(`run-lane: cannot load engine dist (${dist}): ${e.message}`, 4);
 }
 
-const { DeepSeekClient, ImmutablePrefix, CacheFirstLoop, buildCodeToolset, loadEndpoint } =
-  lib;
+const { DeepSeekClient, ImmutablePrefix, CacheFirstLoop, buildCodeToolset, loadEndpoint,
+  codeSystemPrompt } = lib;
 for (const [name, ref] of Object.entries({
   DeepSeekClient,
   ImmutablePrefix,
@@ -136,8 +136,27 @@ try {
   // Full code toolset (file/shell/semantic-search) so lanes match the old acp.
   const toolset = await buildCodeToolset({ rootDir });
   const client = new DeepSeekClient({ apiKey, baseUrl });
+  // Prefix system text: when the caller doesn't supply one, build the SAME code
+  // system prompt the old `reasonix acp` path used (acp.ts builds
+  // codeSystemPrompt(rootDir, {...})). This is the large, BYTE-IDENTICAL shared
+  // block that ImmutablePrefix places first — every fan-out lane shares it, so
+  // DeepSeek caches it once and later lanes hit it warm. Leaving system empty (the
+  // earlier shim behavior) dropped that shared prefix and cost ~2pts of fan-out
+  // cache (measured: fan-out fell from ~91% to ~89%). Per-lane instructions still
+  // ride in `prompt` as before.
+  let systemText = String(req.system ?? "");
+  if (!systemText && typeof codeSystemPrompt === "function") {
+    try {
+      systemText = codeSystemPrompt(rootDir, {
+        hasSemanticSearch: toolset.semantic?.enabled ?? false,
+        modelId: req.model,
+      });
+    } catch {
+      /* fall back to empty system if the prompt builder is unavailable */
+    }
+  }
   const prefix = new ImmutablePrefix({
-    system: String(req.system ?? ""),
+    system: systemText,
     toolSpecs: toolset.tools.specs(),
   });
   const loop = new CacheFirstLoop({
