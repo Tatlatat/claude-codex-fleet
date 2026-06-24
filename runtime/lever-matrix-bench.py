@@ -487,6 +487,11 @@ def run_matrix(configs: list[dict], json_out: bool = False) -> list[dict]:
         cache_m = led.get("median")
         cost = est_cost(in_tok, cache_w if cache_w is not None else 0.0, out_tok)
         quality = grade(out)
+        # Per-lane-type output: TOTAL out_tok is dominated by the 2 EDIT lanes whose
+        # output is high-variance (10-3000+ tok, model-dependent) — it is NOT a reliable
+        # lever signal on a single run. The levers (F/A) cap READ-lane output, so the
+        # READ-lane output sum is the honest, low-variance signal of whether a cap fired.
+        by_type = _output_by_type(out.get("_window"))
         row = {
             "config": cfg["name"],
             "flags": cfg["flags"],
@@ -495,6 +500,8 @@ def run_matrix(configs: list[dict], json_out: bool = False) -> list[dict]:
             "cache_median": cache_m,
             "input_tok": in_tok,
             "output_tok": out_tok,
+            "read_out": by_type.get("read", 0),
+            "edit_out": by_type.get("edit", 0),
             "est_cost": round(cost, 1),
             "quality_pass": quality.get("passed"),
         }
@@ -549,25 +556,39 @@ def _sum_input_tokens(window) -> int:
     return sum(int(r.get("input_tokens") or 0) for r in _ledger_rows(window))
 
 
+def _output_by_type(window) -> dict:
+    """Output-token sum split by lane_type. The READ-lane sum is the low-variance
+    signal a per-type cap (F/A) actually moves; the EDIT-lane sum is high-variance
+    noise that dominates the total and must not be read as a lever effect."""
+    out: dict = {}
+    for r in _ledger_rows(window):
+        lt = r.get("lane_type") or "unknown"
+        out[lt] = out.get(lt, 0) + int(r.get("output_tokens") or 0)
+    return out
+
+
 # --- Printing ------------------------------------------------------------------
 _HEADER = ("config", "lanes", "cache_w%", "cache_med%", "in_tok", "out_tok",
-           "est_cost", "quality")
+           "read_out", "edit_out", "est_cost", "quality")
 
 
 def _print_header() -> None:
     print("\n=== LEVER MATRIX (real reasonix+DeepSeek) ===")
-    print("  {:<14} {:>5} {:>9} {:>10} {:>9} {:>8} {:>9} {:>7}".format(*_HEADER))
+    print("  NOTE: out_tok total is dominated by high-variance EDIT lanes; read_out")
+    print("  (READ-lane output, where F/A caps fire) is the reliable lever signal.")
+    print("  {:<14} {:>5} {:>9} {:>10} {:>9} {:>8} {:>8} {:>8} {:>9} {:>7}".format(*_HEADER))
 
 
 def _print_row(row: dict) -> None:
     if not getattr(_print_row, "_did_header", False):
         _print_header()
         _print_row._did_header = True
-    print("  {:<14} {:>5} {:>9} {:>10} {:>9} {:>8} {:>9} {:>7}".format(
+    print("  {:<14} {:>5} {:>9} {:>10} {:>9} {:>8} {:>8} {:>8} {:>9} {:>7}".format(
         row["config"], row["lanes"],
         f"{row['cache_weighted']}" if row["cache_weighted"] is not None else "-",
         f"{row['cache_median']}" if row["cache_median"] is not None else "-",
-        row["input_tok"], row["output_tok"], row["est_cost"],
+        row["input_tok"], row["output_tok"],
+        row.get("read_out", 0), row.get("edit_out", 0), row["est_cost"],
         "PASS" if row["quality_pass"] else "FAIL"))
 
 
