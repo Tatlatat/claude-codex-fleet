@@ -526,13 +526,6 @@ def provider_chat_payload(payload: JSON, config: JSON) -> JSON:
         if field in payload:
             request[field] = payload[field]
 
-    reasoning = env_first("CLAUDE_REASONIX_GATEWAY_REASONING_EFFORT", "CLAUDE_CODEX_GATEWAY_REASONING_EFFORT")
-    if reasoning and config.get("provider") == "openai":
-        request["reasoning_effort"] = reasoning
-    service_tier = env_first("CLAUDE_REASONIX_GATEWAY_SERVICE_TIER", "CLAUDE_CODEX_GATEWAY_SERVICE_TIER")
-    if service_tier and config.get("provider") == "openai":
-        request["service_tier"] = service_tier
-
     return request
 
 

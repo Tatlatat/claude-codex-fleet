@@ -207,10 +207,6 @@ def tool_definitions() -> list[dict[str, Any]]:
             "cwd": {"type": "string"},
             "model": {"type": "string"},
             "reasoning_effort": {"type": "string"},
-            "service_tier": {"type": "string"},
-            "web_search": {"type": "string", "enum": ["cached", "live", "disabled"]},
-            "sandbox": {"type": "string", "enum": ["read-only", "workspace-write", "danger-full-access"]},
-            "approval_policy": {"type": "string"},
             "timeout_seconds": {"type": "integer", "minimum": 1},
             "skip_git_repo_check": {"type": "boolean"},
         },
@@ -258,12 +254,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             "default_timeout_seconds": DEFAULT_TIMEOUT,
             "default_max_output_chars": DEFAULT_MAX_OUTPUT,
             "log_dir": str(LOG_DIR),
-            "model": os.getenv("REASONIX_FLEET_MODEL", "gpt-5.4"),
+            "model": os.getenv("REASONIX_FLEET_MODEL", "deepseek-v4-flash"),
             "reasoning_effort": os.getenv("REASONIX_FLEET_REASONING", "xhigh"),
-            "service_tier": os.getenv("REASONIX_FLEET_SERVICE_TIER", "fast"),
-            "web_search": os.getenv("REASONIX_FLEET_WEB_SEARCH", "live"),
-            "sandbox": os.getenv("REASONIX_FLEET_SANDBOX", "workspace-write"),
-            "approval_policy": os.getenv("REASONIX_FLEET_APPROVAL", "never"),
         }
     else:
         raise ValueError(f"unknown tool: {name}")

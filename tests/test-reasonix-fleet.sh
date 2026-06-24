@@ -38,6 +38,12 @@ for banned in "ensure_qwen36_ready" "qwen-worker" "qwen-research" "qwen36-local"
   grep -q "$banned" "$LAUNCHER" && fail "launcher still references removed qwen symbol: $banned"
 done
 [[ -f "$ROOT/ccr-claude-proxy.py" ]] && fail "ccr-claude-proxy.py should be deleted"
+# Slim-down Task 3: no gpt-5.4 default, no dead codex-exec fields.
+grep -q "gpt-5.4" "$LAUNCHER" && fail "launcher must not default to gpt-5.4"
+grep -q "gpt-5.4" "$MCP_SERVER" && fail "MCP must not default to gpt-5.4"
+for f in service_tier web_search approval_policy; do
+  grep -q "\"$f\"" "$MCP_SERVER" && fail "MCP still carries codex-exec field: $f"
+done
 
 RX_PROMPT="$ROOT/system-prompt-reasonix.md"
 [[ -f "$RX_PROMPT" ]] || fail "missing reasonix system prompt"
@@ -353,7 +359,7 @@ args = config.get("args", [])
 if "python3" not in args or not any(arg.endswith("reasonix-fleet-mcp.py") for arg in args):
     raise SystemExit(f"unexpected reasonix_fleet args: {args}")
 env = config.get("env", {})
-expected_model = os.environ.get("REASONIX_FLEET_MODEL", "gpt-5.4")
+expected_model = os.environ.get("REASONIX_FLEET_MODEL", "deepseek-v4-flash")
 if env.get("REASONIX_BIN") != "/bin/echo":
     raise SystemExit(f"REASONIX_BIN was not forwarded: {env}")
 if env.get("REASONIX_FLEET_DEFAULT_CONCURRENCY") != "3":
@@ -362,8 +368,8 @@ if env.get("REASONIX_FLEET_MODEL") != expected_model:
     raise SystemExit(f"model env was not {expected_model}: {env}")
 if env.get("REASONIX_FLEET_REASONING") != "xhigh":
     raise SystemExit(f"reasoning default was not xhigh: {env}")
-if env.get("REASONIX_FLEET_SERVICE_TIER") != "fast":
-    raise SystemExit(f"service tier default was not fast: {env}")
+if "REASONIX_FLEET_SERVICE_TIER" in env:
+    raise SystemExit(f"REASONIX_FLEET_SERVICE_TIER must not be forwarded (dead codex-exec field): {env}")
 PY
 
 run_output="$(CLAUDE_REASONIX_NATIVE_SUBAGENTS=0 "$LAUNCHER" run "test prompt")"
