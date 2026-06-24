@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
 # claude-reasonix uninstaller — removes what install.sh added. It does NOT touch
-# reasonix/claude/node (we never installed those), and by default it LEAVES the
-# reasonix ACP patch in place (it is harmless without the launcher). Pass
-# --revert-patch to also undo the dist patch.
+# claude/node (we never installed those). The engine is the bundled fork called
+# in-process — there is no longer any upstream-reasonix dist patch to revert.
 #
-# Usage:  ./uninstall.sh [--revert-patch] [--purge]
-#           --revert-patch   undo the reasonix ACP ephemeral-session edit
+# Usage:  ./uninstall.sh [--purge]
 #           --purge          also delete runtime logs/ledgers/state under INSTALL_HOME
 set -euo pipefail
 
@@ -14,11 +12,9 @@ BIN_DIR="${CLAUDE_REASONIX_BIN_DIR:-$HOME/.local/bin}"
 LAUNCHER_NAME="claude-reasonix"
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-REVERT_PATCH=0
 PURGE=0
 for arg in "$@"; do
   case "$arg" in
-    --revert-patch) REVERT_PATCH=1 ;;
     --purge)        PURGE=1 ;;
     *) printf 'unknown option: %s\n' "$arg" >&2; exit 1 ;;
   esac
@@ -55,17 +51,7 @@ else
   warn "no fleet at $INSTALL_HOME"
 fi
 
-if [ "$REVERT_PATCH" -eq 1 ]; then
-  say "Reverting the reasonix ACP ephemeral-session patch"
-  if python3 "$SRC/patches/apply_ephemeral.py" --revert 2>/dev/null; then
-    ok "patch reverted"
-  else
-    warn "could not auto-revert the patch (it is harmless; a reasonix upgrade also clears it)"
-  fi
-fi
-
 say "Done"
 ok "claude-reasonix uninstalled."
-echo "  reasonix, claude, and node were left untouched (we never installed them)."
-[ "$REVERT_PATCH" -eq 0 ] && \
-  echo "  The reasonix ACP patch was left in place (harmless). Re-run with --revert-patch to undo it."
+echo "  claude and node were left untouched (we never installed them)."
+echo "  The engine was the bundled in-process fork — nothing external to revert."
