@@ -59,7 +59,7 @@ def env_float(*names: str, default: float) -> float:
 
 
 def gateway_trace(event: str, **fields: Any) -> None:
-    if os.getenv("CLAUDE_CODEX_GATEWAY_TRACE", "").lower() not in {"1", "true", "yes", "on"}:
+    if os.getenv("CLAUDE_REASONIX_GATEWAY_TRACE", os.getenv("CLAUDE_CODEX_GATEWAY_TRACE", "")).lower() not in {"1", "true", "yes", "on"}:
         return
     record = {"time": time.time(), "event": event, **fields}
     print(json.dumps(record, ensure_ascii=False, sort_keys=True), file=sys.stderr, flush=True)
@@ -67,7 +67,7 @@ def gateway_trace(event: str, **fields: Any) -> None:
 
 def codex_cli_semaphore() -> threading.BoundedSemaphore:
     global _CODEX_CLI_SEMAPHORE
-    limit = max(1, env_int("CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY", default=16))
+    limit = max(1, env_int("CLAUDE_REASONIX_GATEWAY_CODEX_CONCURRENCY", "CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY", default=16))
     with _CODEX_CLI_SEMAPHORE_LOCK:
         if _CODEX_CLI_SEMAPHORE is None or _CODEX_CLI_SEMAPHORE[0] != limit:
             _CODEX_CLI_SEMAPHORE = (limit, threading.BoundedSemaphore(limit))
@@ -91,7 +91,7 @@ def _prime_dict_cap() -> int:
     # 0 disables eviction (keep all). Default 2048 — large enough that a single
     # burst's whole prefix-family set is never evicted mid-flight (real fan-outs are
     # tens of families), small enough to bound a long-lived session.
-    return env_int("CLAUDE_CODEX_GATEWAY_PRIME_DICT_CAP", default=2048)
+    return env_int("CLAUDE_REASONIX_GATEWAY_PRIME_DICT_CAP", "CLAUDE_CODEX_GATEWAY_PRIME_DICT_CAP", default=2048)
 
 
 def _evict_oldest(*dicts: dict) -> None:
@@ -124,7 +124,7 @@ _KEEPALIVE_PREFIXES: dict[str, tuple[str, float]] = {}
 
 
 def _keepalive_enabled() -> bool:
-    return env_first("CLAUDE_CODEX_GATEWAY_KEEPALIVE", default="1").lower() not in {"0", "false", "no", "off"}
+    return env_first("CLAUDE_REASONIX_GATEWAY_KEEPALIVE", "CLAUDE_CODEX_GATEWAY_KEEPALIVE", default="1").lower() not in {"0", "false", "no", "off"}
 
 
 def record_keepalive_prefix(prompt: str) -> None:
@@ -133,7 +133,7 @@ def record_keepalive_prefix(prompt: str) -> None:
     to carry a meaningful shared prefix."""
     if not _keepalive_enabled():
         return
-    head_len = env_int("CLAUDE_CODEX_GATEWAY_KEEPALIVE_HEAD", default=8192)
+    head_len = env_int("CLAUDE_REASONIX_GATEWAY_KEEPALIVE_HEAD", "CLAUDE_CODEX_GATEWAY_KEEPALIVE_HEAD", default=8192)
     if len(prompt) < min(head_len, 2000):
         return
     key = prefix_prime_key(prompt)
@@ -146,7 +146,7 @@ def record_keepalive_prefix(prompt: str) -> None:
 def keepalive_targets() -> list[tuple[str, str]]:
     """(key, head) pairs for families seen within the freshness window — the prefixes
     worth re-warming. Stale families (the user moved on) are skipped and pruned."""
-    window = env_float("CLAUDE_CODEX_GATEWAY_KEEPALIVE_WINDOW_SECONDS", default=600.0)
+    window = env_float("CLAUDE_REASONIX_GATEWAY_KEEPALIVE_WINDOW_SECONDS", "CLAUDE_CODEX_GATEWAY_KEEPALIVE_WINDOW_SECONDS", default=600.0)
     now = _time.time()
     out: list[tuple[str, str]] = []
     with _KEEPALIVE_LOCK:
@@ -191,7 +191,7 @@ def acquire_serial_slot(key: str) -> bool:
     """True if this caller is within the first PRIME_SERIAL lanes of the family and
     must run serially (hold serial_lock_for(key) while running, release when done).
     False if past the window — run in parallel."""
-    n = env_int("CLAUDE_CODEX_GATEWAY_PRIME_SERIAL", default=3)
+    n = env_int("CLAUDE_REASONIX_GATEWAY_PRIME_SERIAL", "CLAUDE_CODEX_GATEWAY_PRIME_SERIAL", default=3)
     if n <= 0:
         return False
     with _PRIME_SERIAL_LOCK:
@@ -230,7 +230,7 @@ def register_lane_attempt(prompt: str) -> int:
 
 
 def should_force_fallback(prompt: str) -> bool:
-    limit = env_int("CLAUDE_CODEX_GATEWAY_MAX_LANE_RETRIES", default=3)
+    limit = env_int("CLAUDE_REASONIX_GATEWAY_MAX_LANE_RETRIES", "CLAUDE_CODEX_GATEWAY_MAX_LANE_RETRIES", default=3)
     if limit <= 0:
         return False
     key = prefix_prime_key(prompt)
@@ -246,7 +246,7 @@ def clear_lane_count(prompt: str) -> None:
     narrates once — even fresh healthy lanes that would have succeeded on a retry. A
     success proves the family is not stuck looping, so clear it. (Found by the bench
     review lanes auditing the gateway.)"""
-    if env_first("CLAUDE_CODEX_GATEWAY_LANE_RESET_ON_SUCCESS",
+    if env_first("CLAUDE_REASONIX_GATEWAY_LANE_RESET_ON_SUCCESS", "CLAUDE_CODEX_GATEWAY_LANE_RESET_ON_SUCCESS",
                  default="1").lower() not in {"1", "true", "yes", "on"}:
         return  # kill-switch: keep legacy monotonic (never-reset) behavior
     key = prefix_prime_key(prompt)
@@ -264,7 +264,7 @@ def prefix_prime_key(prompt: str) -> str:
     CLAUDE_CODEX_GATEWAY_PRIME_KEY_HEAD (falls back to the legacy
     CLAUDE_CODEX_GATEWAY_PRIME_HEAD_BYTES if set)."""
     import hashlib
-    head = env_int("CLAUDE_CODEX_GATEWAY_PRIME_KEY_HEAD",
+    head = env_int("CLAUDE_REASONIX_GATEWAY_PRIME_KEY_HEAD", "CLAUDE_CODEX_GATEWAY_PRIME_KEY_HEAD",
                    "CLAUDE_CODEX_GATEWAY_PRIME_HEAD_BYTES", default=4096)
     return hashlib.sha1(prompt[:head].encode("utf-8", "ignore")).hexdigest()[:16]
 
@@ -274,7 +274,7 @@ def acquire_prime_role(prompt: str) -> tuple[bool, threading.Event | None]:
     primer (is_primer=True) and MUST call gate.set() when its call completes.
     Later callers get is_primer=False and should wait on the returned gate
     (bounded) before proceeding — by then the prefix is warm."""
-    if env_first("CLAUDE_CODEX_GATEWAY_PRIME_GATE", default="1").lower() not in {"1", "true", "yes", "on"}:
+    if env_first("CLAUDE_REASONIX_GATEWAY_PRIME_GATE", "CLAUDE_CODEX_GATEWAY_PRIME_GATE", default="1").lower() not in {"1", "true", "yes", "on"}:
         return False, None
     key = prefix_prime_key(prompt)
     with _PRIME_LOCK:
@@ -290,9 +290,9 @@ def acquire_prime_role(prompt: str) -> tuple[bool, threading.Event | None]:
 def model_registry() -> dict[str, JSON]:
     return {
         "claude-reasonix-flash": {
-            "display_name": os.getenv("CLAUDE_CODEX_REASONIX_DISPLAY_NAME", "claude-reasonix-flash"),
+            "display_name": os.getenv("CLAUDE_REASONIX_REASONIX_DISPLAY_NAME", os.getenv("CLAUDE_CODEX_REASONIX_DISPLAY_NAME", "claude-reasonix-flash")),
             "provider": "reasonix_cli",
-            "target_model": env_first("CLAUDE_CODEX_REASONIX_MODEL", default="deepseek-v4-flash"),
+            "target_model": env_first("CLAUDE_REASONIX_REASONIX_MODEL", "CLAUDE_REASONIX_REASONIX_MODEL", default="deepseek-v4-flash"),
             "reasonix_bin": env_first("REASONIX_BIN", default="reasonix"),
         },
     }
@@ -525,10 +525,10 @@ def provider_chat_payload(payload: JSON, config: JSON) -> JSON:
         if field in payload:
             request[field] = payload[field]
 
-    reasoning = env_first("CLAUDE_CODEX_GATEWAY_REASONING_EFFORT")
+    reasoning = env_first("CLAUDE_REASONIX_GATEWAY_REASONING_EFFORT", "CLAUDE_CODEX_GATEWAY_REASONING_EFFORT")
     if reasoning and config.get("provider") == "openai":
         request["reasoning_effort"] = reasoning
-    service_tier = env_first("CLAUDE_CODEX_GATEWAY_SERVICE_TIER")
+    service_tier = env_first("CLAUDE_REASONIX_GATEWAY_SERVICE_TIER", "CLAUDE_CODEX_GATEWAY_SERVICE_TIER")
     if service_tier and config.get("provider") == "openai":
         request["service_tier"] = service_tier
 
@@ -536,7 +536,7 @@ def provider_chat_payload(payload: JSON, config: JSON) -> JSON:
 
 
 def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) -> JSON:
-    if os.getenv("CLAUDE_CODEX_GATEWAY_MOCK", "").lower() in {"1", "true", "yes", "on"}:
+    if os.getenv("CLAUDE_REASONIX_GATEWAY_MOCK", os.getenv("CLAUDE_CODEX_GATEWAY_MOCK", "")).lower() in {"1", "true", "yes", "on"}:
         return {
             "id": f"msg_{uuid4().hex}",
             "type": "message",
@@ -558,9 +558,9 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         prompt = openai_messages_to_prompt(messages, payload.get("tools"))
         register_lane_attempt(prompt)
         record_keepalive_prefix(prompt)
-        if os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("CLAUDE_REASONIX_GATEWAY_STRUCTURED_DEBUG", os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "")).lower() in {"1", "true", "yes", "on"}:
             try:
-                _dd = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+                _dd = Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                     default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
                 _dd.mkdir(parents=True, exist_ok=True)
                 with open(_dd / "structured-debug.jsonl", "a", encoding="utf-8") as _df:
@@ -577,13 +577,13 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         gateway_trace("reasonix_acp_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
         ledger = env_first(
-            "CLAUDE_CODEX_REASONIX_COST_LEDGER",
-            default=str(Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+            "CLAUDE_REASONIX_REASONIX_COST_LEDGER", "CLAUDE_CODEX_REASONIX_COST_LEDGER",
+            default=str(Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                                        default=os.path.dirname(os.path.abspath(__file__)))) / "runtime" / "reasonix-cost.jsonl"),
         )
         append_reasonix_cost(
             ledger, usage,
-            cwd=env_first("CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd()),
+            cwd=env_first("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", "CLAUDE_REASONIX_GATEWAY_CODEX_CWD", default=os.getcwd()),
             model=str(config.get("target_model") or ""),
             claude_equiv=usage.get("reasonix_claude_equiv_usd"),
         )
@@ -596,9 +596,9 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         # harness gets the tool-call it requires. Fall back to plain text only when
         # no structured tool was requested or the output isn't valid JSON.
         structured_tool = requested_structured_output_tool(payload)
-        if os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("CLAUDE_REASONIX_GATEWAY_STRUCTURED_DEBUG", os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "")).lower() in {"1", "true", "yes", "on"}:
             try:
-                _dbg_dir = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+                _dbg_dir = Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                     default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
                 _dbg_dir.mkdir(parents=True, exist_ok=True)
                 _parsed = parse_json_object_from_text(text) if structured_tool else None
@@ -631,7 +631,7 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
                 if forced or looping:
                     if looping:
                         gateway_trace("lane_loop_break", model=requested_model,
-                                      retries=env_int("CLAUDE_CODEX_GATEWAY_MAX_LANE_RETRIES", default=3))
+                                      retries=env_int("CLAUDE_REASONIX_GATEWAY_MAX_LANE_RETRIES", "CLAUDE_CODEX_GATEWAY_MAX_LANE_RETRIES", default=3))
                     tool_input = structured_timeout_fallback(
                         payload.get("tools"), structured_tool,
                         "schema-valid fallback (model narrated or lane looped)",
@@ -812,9 +812,9 @@ def is_heavy_synthesis(tools: Any, prompt_len: int, prompt_text: str = "") -> bo
     lane that flash loops on — route it to the map-reduce skill. The synthesis-intent
     gate keeps the skill OUT of reader lanes (which also have nested schemas + long
     prompts). Disabled by CLAUDE_CODEX_GATEWAY_MAPREDUCE_SYNTHESIS=0."""
-    if os.getenv("CLAUDE_CODEX_GATEWAY_MAPREDUCE_SYNTHESIS", "1").lower() not in {"1", "true", "yes", "on"}:
+    if os.getenv("CLAUDE_REASONIX_GATEWAY_MAPREDUCE_SYNTHESIS", os.getenv("CLAUDE_CODEX_GATEWAY_MAPREDUCE_SYNTHESIS", "1")).lower() not in {"1", "true", "yes", "on"}:
         return False
-    min_len = env_int("CLAUDE_CODEX_GATEWAY_MAPREDUCE_MIN_PROMPT", default=20000)
+    min_len = env_int("CLAUDE_REASONIX_GATEWAY_MAPREDUCE_MIN_PROMPT", "CLAUDE_CODEX_GATEWAY_MAPREDUCE_MIN_PROMPT", default=20000)
     if prompt_len < min_len:
         return False
     # Map-reduce is a Synthesize-phase tool only. A reader lane must never get it.
@@ -854,7 +854,7 @@ def context_budget_directive() -> str:
     crammed. The real fix for oversized work is finer decomposition at the controller
     (see system-prompt-reasonix.md). Byte-identical across lanes (prefix-stable).
     Off via CLAUDE_CODEX_GATEWAY_CONTEXT_GUARD=0."""
-    if os.getenv("CLAUDE_CODEX_GATEWAY_CONTEXT_GUARD", "1").lower() not in {"1", "true", "yes", "on"}:
+    if os.getenv("CLAUDE_REASONIX_GATEWAY_CONTEXT_GUARD", os.getenv("CLAUDE_CODEX_GATEWAY_CONTEXT_GUARD", "1")).lower() not in {"1", "true", "yes", "on"}:
         return ""
     return (
         "WORK LEAN (this directly controls cost and speed — but never skip work the "
@@ -1244,7 +1244,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     # which the old text-only MOCK mode skipped entirely. Set
     # CLAUDE_CODEX_GATEWAY_MOCK_REASONIX_TEXT to the text reasonix should "return"
     # (e.g. a JSON object, or prose to test the narrate->fallback path).
-    _mock_text = os.getenv("CLAUDE_CODEX_GATEWAY_MOCK_REASONIX_TEXT")
+    _mock_text = os.getenv("CLAUDE_REASONIX_GATEWAY_MOCK_REASONIX_TEXT", os.getenv("CLAUDE_CODEX_GATEWAY_MOCK_REASONIX_TEXT"))
     if _mock_text is not None:
         return _mock_text, {
             "input_tokens": max(1, len(prompt) // 4), "output_tokens": max(1, len(_mock_text) // 4),
@@ -1270,7 +1270,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     # load/append) so each stateless fan-out lane is fully isolated. Requires the
     # one-line dist patch that honors REASONIX_ACP_EPHEMERAL_SESSION; kill-switch:
     # set CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL=0 to restore stock behavior.
-    if env_first("CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL", default="1") not in {"0", "false", "no", "off"}:
+    if env_first("CLAUDE_REASONIX_GATEWAY_REASONIX_EPHEMERAL", "CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL", default="1") not in {"0", "false", "no", "off"}:
         reasonix_env.setdefault("REASONIX_ACP_EPHEMERAL_SESSION", "1")
     _bin_dir = os.path.dirname(os.path.abspath(reasonix_bin)) if os.path.sep in reasonix_bin else ""
     if _bin_dir and os.path.exists(os.path.join(_bin_dir, "node")):
@@ -1278,11 +1278,11 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         if _bin_dir not in _cur_path.split(os.pathsep):
             reasonix_env["PATH"] = _bin_dir + (os.pathsep + _cur_path if _cur_path else "")
     model = str(config.get("target_model") or "deepseek-v4-flash")
-    effort = env_first("CLAUDE_CODEX_REASONIX_EFFORT", default="high")
-    budget = env_first("CLAUDE_CODEX_REASONIX_BUDGET", default="0.05")
-    timeout = float(env_first("CLAUDE_CODEX_GATEWAY_CODEX_TIMEOUT", "CODEX_FLEET_TIMEOUT_SECONDS", default="600"))
-    cwd = env_first("CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd())
-    max_attempts = max(1, env_int("CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS", default=3))
+    effort = env_first("CLAUDE_REASONIX_REASONIX_EFFORT", "CLAUDE_CODEX_REASONIX_EFFORT", default="high")
+    budget = env_first("CLAUDE_REASONIX_REASONIX_BUDGET", "CLAUDE_CODEX_REASONIX_BUDGET", default="0.05")
+    timeout = float(env_first("CLAUDE_REASONIX_GATEWAY_CODEX_TIMEOUT", "CLAUDE_CODEX_GATEWAY_CODEX_TIMEOUT", "CODEX_FLEET_TIMEOUT_SECONDS", default="600"))
+    cwd = env_first("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", "CLAUDE_REASONIX_GATEWAY_CODEX_CWD", default=os.getcwd())
+    max_attempts = max(1, env_int("CLAUDE_REASONIX_GATEWAY_CODEX_MAX_ATTEMPTS", "CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS", default=3))
     semaphore = codex_cli_semaphore()
 
     def _attempt() -> tuple[str, JSON]:
@@ -1508,7 +1508,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         # prompt-ORDER problem we can fix by stabilising the prefix) or have a
         # genuinely novel prefix (unavoidable cold start). Append-only JSONL; no
         # behavior change. The prompt text itself is NOT logged, only hashes.
-        if os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("CLAUDE_REASONIX_GATEWAY_PREFIX_TRACE", os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "")).lower() in {"1", "true", "yes", "on"}:
             try:
                 import hashlib
                 pfx4 = hashlib.sha1(prompt[:4096].encode("utf-8", "ignore")).hexdigest()[:12]
@@ -1534,7 +1534,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
                     "chunk_samples": chunk_samples,
                 }
                 ledger_dir = Path(env_first(
-                    "CLAUDE_CODEX_FLEET_HOME",
+                    "CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                     default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
                 ledger_dir.mkdir(parents=True, exist_ok=True)
                 with open(ledger_dir / "prefix-trace.jsonl", "a", encoding="utf-8") as _pf:
@@ -1546,9 +1546,9 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     # Prefix-prime gate: the first lane of a shared-prefix burst warms DeepSeek's
     # cache alone; later lanes wait (bounded) for that warm-up, then run together.
     is_primer, prime_gate = acquire_prime_role(prompt)
-    if os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "").lower() in {"1", "true", "yes", "on"}:
+    if os.getenv("CLAUDE_REASONIX_GATEWAY_PREFIX_TRACE", os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "")).lower() in {"1", "true", "yes", "on"}:
         try:
-            _pdir = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+            _pdir = Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                 default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
             _pdir.mkdir(parents=True, exist_ok=True)
             with open(_pdir / "prime-trace.jsonl", "a", encoding="utf-8") as _pf:
@@ -1573,7 +1573,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     serial_lock = serial_lock_for(prime_key) if serial_slot else None
 
     if prime_gate is not None and not is_primer:
-        wait_s = env_float("CLAUDE_CODEX_GATEWAY_PRIME_WAIT_SECONDS", default=20.0)
+        wait_s = env_float("CLAUDE_REASONIX_GATEWAY_PRIME_WAIT_SECONDS", "CLAUDE_CODEX_GATEWAY_PRIME_WAIT_SECONDS", default=20.0)
         opened = prime_gate.wait(timeout=wait_s)
         # Post-open grace settle: DeepSeek persists the primed prefix in "seconds"
         # (per its cache docs), so let it finish writing before the waiters fire, or
@@ -1583,12 +1583,12 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         # them to run strictly after the prior lane completes + its settle sleep, so
         # an extra grace here only adds dead wall-clock without improving the cache.
         if opened and serial_slot is False:
-            grace = env_float("CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", default=4.0)
+            grace = env_float("CLAUDE_REASONIX_GATEWAY_PRIME_GRACE_SECONDS", "CLAUDE_CODEX_GATEWAY_PRIME_GRACE_SECONDS", default=4.0)
             if grace > 0:
                 _time.sleep(min(grace, 15.0))
-    if serial_slot and os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "").lower() in {"1", "true", "yes", "on"}:
+    if serial_slot and os.getenv("CLAUDE_REASONIX_GATEWAY_PREFIX_TRACE", os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "")).lower() in {"1", "true", "yes", "on"}:
         try:
-            _sdir = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+            _sdir = Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                 default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
             _sdir.mkdir(parents=True, exist_ok=True)
             with open(_sdir / "prime-trace.jsonl", "a", encoding="utf-8") as _pf:
@@ -1611,7 +1611,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     # a cold mid-burst lane. Env CLAUDE_CODEX_GATEWAY_RETRY_EMPTY: "burst" (default) =
     # isolated-only; "1"/"all" = always (legacy, re-introduces burst variance);
     # "0"/off = never.
-    _re = os.getenv("CLAUDE_CODEX_GATEWAY_RETRY_EMPTY", "burst").lower()
+    _re = os.getenv("CLAUDE_REASONIX_GATEWAY_RETRY_EMPTY", os.getenv("CLAUDE_CODEX_GATEWAY_RETRY_EMPTY", "burst")).lower()
     retry_empty_isolated = _re not in {"0", "false", "no", "off"}
     retry_empty_in_burst = _re in {"1", "true", "yes", "on", "all"}
 
@@ -1651,7 +1651,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
         try:
             return _run_attempts()
         finally:
-            settle = env_float("CLAUDE_CODEX_GATEWAY_PRIME_SERIAL_SETTLE_SECONDS", default=4.0)
+            settle = env_float("CLAUDE_REASONIX_GATEWAY_PRIME_SERIAL_SETTLE_SECONDS", "CLAUDE_CODEX_GATEWAY_PRIME_SERIAL_SETTLE_SECONDS", default=4.0)
             if settle > 0:
                 _time.sleep(min(settle, 15.0))
             serial_lock.release()
@@ -1683,13 +1683,13 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         gateway_trace("reasonix_acp_openai_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
         ledger = env_first(
-            "CLAUDE_CODEX_REASONIX_COST_LEDGER",
-            default=str(Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+            "CLAUDE_REASONIX_REASONIX_COST_LEDGER", "CLAUDE_CODEX_REASONIX_COST_LEDGER",
+            default=str(Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                                        default=os.path.dirname(os.path.abspath(__file__)))) / "runtime" / "reasonix-cost.jsonl"),
         )
         append_reasonix_cost(
             ledger, usage,
-            cwd=env_first("CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd()),
+            cwd=env_first("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", "CLAUDE_REASONIX_GATEWAY_CODEX_CWD", default=os.getcwd()),
             model=str(config.get("target_model") or ""),
             claude_equiv=usage.get("reasonix_claude_equiv_usd"),
         )
@@ -1705,9 +1705,9 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         # a StructuredOutput tool, emit the model's JSON as a tool_calls response so
         # the harness gets the tool-call it requires instead of prose.
         structured_tool = requested_structured_output_tool(payload)
-        if os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("CLAUDE_REASONIX_GATEWAY_STRUCTURED_DEBUG", os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "")).lower() in {"1", "true", "yes", "on"}:
             try:
-                _dbg_dir = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
+                _dbg_dir = Path(env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
                     default=os.path.dirname(os.path.abspath(__file__)))) / "runtime"
                 _dbg_dir.mkdir(parents=True, exist_ok=True)
                 _parsed = parse_json_object_from_text(text) if structured_tool else None
@@ -1798,7 +1798,7 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "claude-codex-gateway/0.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        if os.getenv("CLAUDE_CODEX_GATEWAY_QUIET", "1").lower() in {"1", "true", "yes", "on"}:
+        if os.getenv("CLAUDE_REASONIX_GATEWAY_QUIET", os.getenv("CLAUDE_CODEX_GATEWAY_QUIET", "1")).lower() in {"1", "true", "yes", "on"}:
             return
         super().log_message(fmt, *args)
 
@@ -1912,7 +1912,7 @@ class Handler(BaseHTTPRequestHandler):
         except GatewayError as exc:
             self._safe_send_error(exc)
         except Exception as exc:
-            if os.getenv("CLAUDE_CODEX_GATEWAY_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
+            if os.getenv("CLAUDE_REASONIX_GATEWAY_DEBUG", os.getenv("CLAUDE_CODEX_GATEWAY_DEBUG", "")).lower() in {"1", "true", "yes", "on"}:
                 traceback.print_exc(file=sys.stderr)
             self._safe_send_error(GatewayError(500, "api_error", str(exc)))
 
@@ -1951,7 +1951,7 @@ class Handler(BaseHTTPRequestHandler):
                 result_queue.put(("error", exc))
 
         threading.Thread(target=worker, daemon=True).start()
-        interval = max(1.0, float(os.getenv("CLAUDE_CODEX_GATEWAY_STREAM_KEEPALIVE_SECONDS", "10")))
+        interval = max(1.0, float(os.getenv("CLAUDE_REASONIX_GATEWAY_STREAM_KEEPALIVE_SECONDS", os.getenv("CLAUDE_CODEX_GATEWAY_STREAM_KEEPALIVE_SECONDS", "10"))))
         while True:
             try:
                 kind, value = result_queue.get(timeout=interval)
@@ -2074,7 +2074,7 @@ class Handler(BaseHTTPRequestHandler):
         # empty. Emit an explicit text block so the lane surfaces the problem instead
         # of looking like a clean empty success. Off via
         # CLAUDE_CODEX_GATEWAY_HOLLOW_GUARD=0.
-        if emitted_real == 0 and os.getenv("CLAUDE_CODEX_GATEWAY_HOLLOW_GUARD", "1").lower() in {"1", "true", "yes", "on"}:
+        if emitted_real == 0 and os.getenv("CLAUDE_REASONIX_GATEWAY_HOLLOW_GUARD", os.getenv("CLAUDE_CODEX_GATEWAY_HOLLOW_GUARD", "1")).lower() in {"1", "true", "yes", "on"}:
             self.send_sse_event(
                 "content_block_start",
                 {"type": "content_block_start", "index": next_index, "content_block": {"type": "text", "text": ""}},
@@ -2162,7 +2162,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_openai_sse_data("[DONE]")
 
     def forward_anthropic(self, payload: JSON) -> None:
-        upstream_base = env_first("CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL", default="https://api.anthropic.com").rstrip("/")
+        upstream_base = env_first("CLAUDE_REASONIX_GATEWAY_ANTHROPIC_BASE_URL", "CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL", default="https://api.anthropic.com").rstrip("/")
         url = upstream_base + self.path
         headers: dict[str, str] = {"content-type": "application/json"}
         for name in ("anthropic-beta", "anthropic-version", "accept"):
@@ -2170,8 +2170,8 @@ class Handler(BaseHTTPRequestHandler):
             if value:
                 headers[name] = value
 
-        auth_token = env_first("CLAUDE_CODEX_GATEWAY_ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
-        api_key = env_first("CLAUDE_CODEX_GATEWAY_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
+        auth_token = env_first("CLAUDE_REASONIX_GATEWAY_ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODEX_GATEWAY_ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN")
+        api_key = env_first("CLAUDE_REASONIX_GATEWAY_ANTHROPIC_API_KEY", "CLAUDE_CODEX_GATEWAY_ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY")
         if auth_token:
             headers["authorization"] = f"Bearer {auth_token}"
         elif api_key:
@@ -2186,7 +2186,7 @@ class Handler(BaseHTTPRequestHandler):
 
         req = urllib.request.Request(url, data=json_bytes(payload), headers=headers, method="POST")
         try:
-            with urllib.request.urlopen(req, timeout=float(os.getenv("CLAUDE_CODEX_GATEWAY_TIMEOUT", "600"))) as response:
+            with urllib.request.urlopen(req, timeout=float(os.getenv("CLAUDE_REASONIX_GATEWAY_TIMEOUT", os.getenv("CLAUDE_CODEX_GATEWAY_TIMEOUT", "600")))) as response:
                 body = response.read()
                 self.send_response(response.status)
                 for key, value in response.headers.items():
@@ -2209,7 +2209,7 @@ def _keepalive_loop() -> None:
     workflows. Each ping carries ONLY the stored head (the cacheable shared block) +
     a 1-token ask, so it costs ~one cache-hit-priced request and refreshes recency.
     Best-effort: swallows all errors; never affects real lanes."""
-    interval = env_float("CLAUDE_CODEX_GATEWAY_KEEPALIVE_INTERVAL_SECONDS", default=120.0)
+    interval = env_float("CLAUDE_REASONIX_GATEWAY_KEEPALIVE_INTERVAL_SECONDS", "CLAUDE_CODEX_GATEWAY_KEEPALIVE_INTERVAL_SECONDS", default=120.0)
     config = model_registry().get("claude-reasonix-flash", {})
     while True:
         try:
@@ -2230,8 +2230,8 @@ def _keepalive_loop() -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local native-model gateway for claude-codex")
-    parser.add_argument("--host", default=os.getenv("CLAUDE_CODEX_GATEWAY_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("CLAUDE_CODEX_GATEWAY_PORT", "0")))
+    parser.add_argument("--host", default=os.getenv("CLAUDE_REASONIX_GATEWAY_HOST", os.getenv("CLAUDE_CODEX_GATEWAY_HOST", "127.0.0.1")))
+    parser.add_argument("--port", type=int, default=int(os.getenv("CLAUDE_REASONIX_GATEWAY_PORT", os.getenv("CLAUDE_CODEX_GATEWAY_PORT", "0"))))
     parser.add_argument("--port-file", default="")
     args = parser.parse_args()
 

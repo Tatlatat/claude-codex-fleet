@@ -5,7 +5,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-GATEWAY="$ROOT/codex-native-gateway.py"
+GATEWAY="$ROOT/reasonix-native-gateway.py"
 
 fail() {
   echo "FAIL: $*" >&2

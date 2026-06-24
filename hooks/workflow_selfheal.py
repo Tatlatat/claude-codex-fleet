@@ -121,7 +121,7 @@ def preflight(script: str, mode: str) -> tuple[str, str, dict]:
                 "gateway with current code is started, then re-run the workflow."
             )
 
-        if os.getenv("CLAUDE_CODEX_FLAVOR") == "reasonix":
+        if os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR")) == "reasonix":
             reasonix_present = bool(shutil.which(os.getenv("REASONIX_BIN", "reasonix")))
             report["checks"]["reasonix_cli"] = {"present": reasonix_present}
             if not reasonix_present:

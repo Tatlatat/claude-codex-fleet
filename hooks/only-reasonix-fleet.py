@@ -17,11 +17,11 @@ def iter_strings(value):
 
 
 def native_subagents_enabled() -> bool:
-    return os.getenv("CLAUDE_CODEX_NATIVE_SUBAGENTS", "0").lower() in {"1", "true", "yes", "on"}
+    return os.getenv("CLAUDE_REASONIX_NATIVE_SUBAGENTS", os.getenv("CLAUDE_CODEX_NATIVE_SUBAGENTS", "0")).lower() in {"1", "true", "yes", "on"}
 
 
 def flavor() -> str:
-    return os.getenv("CLAUDE_CODEX_FLAVOR", "codex").strip().lower()
+    return os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "codex")).strip().lower()
 
 
 def payload_mentions_native_agent(payload) -> bool:

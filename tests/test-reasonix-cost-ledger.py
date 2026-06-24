@@ -15,7 +15,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("rx_cost_gw", ROOT / "codex-native-gateway.py")
+spec = importlib.util.spec_from_file_location("rx_cost_gw", ROOT / "reasonix-native-gateway.py")
 gw = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 spec.loader.exec_module(gw)

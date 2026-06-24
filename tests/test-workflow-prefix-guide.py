@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests the env-gated prefix-cache guide in codex-workflow.py's Workflow hook."""
+"""Tests the env-gated prefix-cache guide in reasonix-workflow.py's Workflow hook."""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-HOOK = Path(__file__).resolve().parent.parent / "hooks" / "codex-workflow.py"
+HOOK = Path(__file__).resolve().parent.parent / "hooks" / "reasonix-workflow.py"
 
 # A minimal Workflow tool payload: the hook only needs tool_name == "Workflow"
 # and a tool_input.script containing at least one agent() call so rewrite_script

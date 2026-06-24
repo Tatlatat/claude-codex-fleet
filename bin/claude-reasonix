@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-INSTALL_HOME="${CLAUDE_CODEX_FLEET_INSTALL_HOME:-/Users/tatlatat/.claude/codex-fleet}"
-FLEET_HOME="${CLAUDE_CODEX_FLEET_HOME:-$INSTALL_HOME}"
+INSTALL_HOME="${CLAUDE_REASONIX_FLEET_INSTALL_HOME:-${CLAUDE_CODEX_FLEET_INSTALL_HOME:-$HOME/.claude/reasonix-fleet}}"
+FLEET_HOME="${CLAUDE_REASONIX_FLEET_HOME:-${CLAUDE_CODEX_FLEET_HOME:-$INSTALL_HOME}}"
 STATE_DIR="$FLEET_HOME/state"
 RUNTIME_DIR="$FLEET_HOME/runtime"
 ENABLED_FILE="$STATE_DIR/enabled"
@@ -10,8 +10,8 @@ WORKERS_FILE="$STATE_DIR/workers"
 MCP_FILE="$RUNTIME_DIR/mcp.json"
 SETTINGS_FILE="$INSTALL_HOME/bridge-settings.json"
 PROMPT_FILE="$INSTALL_HOME/system-prompt-reasonix.md"
-MCP_SERVER_FILE="$INSTALL_HOME/codex-fleet-mcp.py"
-GATEWAY_FILE="$INSTALL_HOME/codex-native-gateway.py"
+MCP_SERVER_FILE="$INSTALL_HOME/reasonix-fleet-mcp.py"
+GATEWAY_FILE="$INSTALL_HOME/reasonix-native-gateway.py"
 CCR_PROXY_FILE="$INSTALL_HOME/ccr-claude-proxy.py"
 AGENTS_FILE="$RUNTIME_DIR/agents.json"
 CCR_HOME="$RUNTIME_DIR/ccr-home"
@@ -23,7 +23,7 @@ CCR_AGENTS_FILE="$RUNTIME_DIR/ccr-agents.json"
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
 CODEX_BIN="${CODEX_BIN:-codex}"
 CCR_BIN="${CCR_BIN:-ccr}"
-DEFAULT_WORKERS="${CLAUDE_CODEX_FLEET_DEFAULT_WORKERS:-16}"
+DEFAULT_WORKERS="${CLAUDE_REASONIX_FLEET_DEFAULT_WORKERS:-${CLAUDE_CODEX_FLEET_DEFAULT_WORKERS:-16}}"
 NATIVE_GATEWAY_PID=""
 NATIVE_GATEWAY_URL=""
 CCR_SERVICE_PID=""
@@ -37,16 +37,16 @@ CLAUDE_CODEX_FLAVOR="reasonix"
 export CLAUDE_CODEX_FLAVOR
 
 if [[ "$CLAUDE_CODEX_FLAVOR" == "reasonix" ]]; then
-  : "${CLAUDE_CODEX_CCR_CODEX_MODEL:=claude-reasonix-flash}"
-  : "${CLAUDE_CODEX_SUBAGENT_MODEL:=claude-reasonix-flash}"
+  : "${CLAUDE_CODEX_CCR_CODEX_MODEL:=${CLAUDE_REASONIX_CCR_CODEX_MODEL:-claude-reasonix-flash}}"
+  : "${CLAUDE_CODEX_SUBAGENT_MODEL:=${CLAUDE_REASONIX_SUBAGENT_MODEL:-claude-reasonix-flash}}"
   : "${ANTHROPIC_CUSTOM_MODEL_OPTION:=claude-reasonix-flash}"
   # The worker agents (--agents) carry a <CCR-SUBAGENT-MODEL> route tag that decides
   # where each lane actually goes. Both codex and deepseek routes point at
   # claude-reasonix-flash (the only gateway-served model in reasonix mode).
-  : "${CLAUDE_CODEX_CCR_CODEX_ROUTE:=codex-gateway,claude-reasonix-flash}"
-  : "${CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE:=codex-gateway,claude-reasonix-flash}"
+  : "${CLAUDE_CODEX_CCR_CODEX_ROUTE:=${CLAUDE_REASONIX_CCR_CODEX_ROUTE:-codex-gateway,claude-reasonix-flash}}"
+  : "${CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE:=${CLAUDE_REASONIX_CCR_DEEPSEEK_ROUTE:-codex-gateway,claude-reasonix-flash}}"
   # All deepseek-* agent types also run on reasonix-flash.
-  : "${CLAUDE_CODEX_CCR_DEEPSEEK_MODEL:=claude-reasonix-flash}"
+  : "${CLAUDE_CODEX_CCR_DEEPSEEK_MODEL:=${CLAUDE_REASONIX_CCR_DEEPSEEK_MODEL:-claude-reasonix-flash}}"
   # UltraCode / Dynamic Workflow defaults to NATIVE mode in reasonix flavor: each
   # agent() lane keeps its codex-*/deepseek-* agentType (a native Claude Code
   # subagent type) which CCR routes to claude-reasonix-flash — this is what gives
@@ -54,8 +54,8 @@ if [[ "$CLAUDE_CODEX_FLAVOR" == "reasonix" ]]; then
   # serial single-MCP-worker behaviour of "fleet" mode. native_subagents=1 lets
   # only-codex-fleet.py whitelist those native lanes through. Both are required
   # for fan-out; without them the workflow falls back to one-MCP-lane-at-a-time.
-  : "${CLAUDE_CODEX_WORKFLOW_MODE:=native}"
-  : "${CLAUDE_CODEX_NATIVE_SUBAGENTS:=1}"
+  : "${CLAUDE_CODEX_WORKFLOW_MODE:=${CLAUDE_REASONIX_WORKFLOW_MODE:-native}}"
+  : "${CLAUDE_CODEX_NATIVE_SUBAGENTS:=${CLAUDE_REASONIX_NATIVE_SUBAGENTS:-1}}"
   export CLAUDE_CODEX_CCR_CODEX_MODEL CLAUDE_CODEX_SUBAGENT_MODEL ANTHROPIC_CUSTOM_MODEL_OPTION
   export CLAUDE_CODEX_CCR_CODEX_ROUTE CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE CLAUDE_CODEX_CCR_DEEPSEEK_MODEL
   export CLAUDE_CODEX_WORKFLOW_MODE CLAUDE_CODEX_NATIVE_SUBAGENTS
@@ -140,7 +140,7 @@ prepare_router_runtime() {
 
 cleanup_router_runtime() {
   if [[ -n "${ROUTER_SESSION_RUNTIME_DIR:-}" && -d "$ROUTER_SESSION_RUNTIME_DIR" ]]; then
-    case "${CLAUDE_CODEX_KEEP_ROUTER_RUNTIME:-0}" in
+    case "${CLAUDE_REASONIX_KEEP_ROUTER_RUNTIME:-${CLAUDE_CODEX_KEEP_ROUTER_RUNTIME:-0}}" in
       1|true|TRUE|yes|YES|on|ON) ;;
       *) rm -rf "$ROUTER_SESSION_RUNTIME_DIR" ;;
     esac
@@ -171,7 +171,7 @@ current_workers() {
 }
 
 native_subagents_enabled() {
-  case "${CLAUDE_CODEX_NATIVE_SUBAGENTS:-0}" in
+  case "${CLAUDE_REASONIX_NATIVE_SUBAGENTS:-${CLAUDE_CODEX_NATIVE_SUBAGENTS:-0}}" in
     0|false|FALSE|off|OFF|no|NO) return 1 ;;
     *) return 0 ;;
   esac
@@ -472,7 +472,7 @@ PY
 generate_ccr_config() {
   ensure_dirs
   mkdir -p "$CCR_CONFIG_DIR"
-  local ccr_port="${1:-${CLAUDE_CODEX_CCR_PORT:-3456}}"
+  local ccr_port="${1:-${CLAUDE_REASONIX_CCR_PORT:-${CLAUDE_CODEX_CCR_PORT:-3456}}}"
   local gateway_url="${2:-${NATIVE_GATEWAY_URL:-http://127.0.0.1:65535}}"
   python3 - "$CCR_CONFIG_FILE" "$CCR_CUSTOM_ROUTER_FILE" "$ccr_port" "$gateway_url" <<'PY'
 import json
@@ -617,12 +617,12 @@ start_native_gateway() {
     exit 1
   }
 
-  local host="${CLAUDE_CODEX_GATEWAY_HOST:-127.0.0.1}"
-  local port="${CLAUDE_CODEX_GATEWAY_PORT:-0}"
+  local host="${CLAUDE_REASONIX_GATEWAY_HOST:-${CLAUDE_CODEX_GATEWAY_HOST:-127.0.0.1}}"
+  local port="${CLAUDE_REASONIX_GATEWAY_PORT:-${CLAUDE_CODEX_GATEWAY_PORT:-0}}"
   local port_file="$RUNTIME_DIR/gateway.$$.port"
   local log_file="$RUNTIME_DIR/gateway.log"
-  local upstream_base="${CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-https://api.anthropic.com}}"
-  local gateway_codex_concurrency="${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}"
+  local upstream_base="${CLAUDE_REASONIX_GATEWAY_ANTHROPIC_BASE_URL:-${CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-https://api.anthropic.com}}}"
+  local gateway_codex_concurrency="${CLAUDE_REASONIX_GATEWAY_CODEX_CONCURRENCY:-${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}}"
   rm -f "$port_file"
 
   CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL="$upstream_base" \
@@ -757,12 +757,12 @@ PY
 }
 
 ensure_qwen36_ready() {
-  case "${CLAUDE_CODEX_QWEN_SKIP_START:-0}" in
+  case "${CLAUDE_REASONIX_QWEN_SKIP_START:-${CLAUDE_CODEX_QWEN_SKIP_START:-0}}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
   esac
 
   local base
-  base="${CLAUDE_CODEX_QWEN_HEALTH_URL:-http://127.0.0.1:14000/health}"
+  base="${CLAUDE_REASONIX_QWEN_HEALTH_URL:-${CLAUDE_CODEX_QWEN_HEALTH_URL:-http://127.0.0.1:14000/health}}"
   if curl -fsS "$base" >/dev/null 2>&1; then
     return 0
   fi
@@ -792,7 +792,7 @@ start_ccr_proxy() {
     --port "$proxy_port"
     --port-file "$port_file"
     --target "http://127.0.0.1:$ccr_port"
-    --main-target "${CLAUDE_CODEX_MAIN_ANTHROPIC_BASE_URL:-https://api.anthropic.com}"
+    --main-target "${CLAUDE_REASONIX_MAIN_ANTHROPIC_BASE_URL:-${CLAUDE_CODEX_MAIN_ANTHROPIC_BASE_URL:-https://api.anthropic.com}}"
     --api-key "$ccr_api_key"
     --models "$models"
     --alias-models "$aliases"
@@ -800,7 +800,7 @@ start_ccr_proxy() {
   if [[ -n "${NATIVE_GATEWAY_URL:-}" ]]; then
     proxy_args+=(
       --direct-alias-target "$NATIVE_GATEWAY_URL"
-      --direct-alias-models "${CLAUDE_CODEX_DIRECT_ALIAS_MODELS:-claude-reasonix-flash}"
+      --direct-alias-models "${CLAUDE_REASONIX_DIRECT_ALIAS_MODELS:-${CLAUDE_CODEX_DIRECT_ALIAS_MODELS:-claude-reasonix-flash}}"
     )
   fi
   if [[ "$passthrough_main" == "1" ]]; then
@@ -889,7 +889,7 @@ run_claude_with_fleet() {
   if native_subagents_enabled; then
     local agent_defs
     agent_defs="$(agents_json)"
-    local forced_subagent_model="${CLAUDE_CODEX_SUBAGENT_MODEL:-${CLAUDE_CODEX_NATIVE_REASONIX_MODEL:-claude-reasonix-flash}}"
+    local forced_subagent_model="${CLAUDE_REASONIX_SUBAGENT_MODEL:-${CLAUDE_CODEX_SUBAGENT_MODEL:-${CLAUDE_CODEX_NATIVE_REASONIX_MODEL:-claude-reasonix-flash}}}"
     start_native_gateway
     set +e
     CLAUDE_CODEX_NATIVE_SUBAGENTS=1 \
@@ -940,12 +940,12 @@ run_claude_with_router() {
     exit 1
   }
 
-  local qwen_main_model="${CLAUDE_CODEX_CCR_QWEN_MODEL:-qwen36-mlx}"
+  local qwen_main_model="${CLAUDE_REASONIX_CCR_QWEN_MODEL:-${CLAUDE_CODEX_CCR_QWEN_MODEL:-qwen36-mlx}}"
   local selected_main_model=""
   if [[ "$router_auth_mode" == "qwen" ]]; then
     ensure_qwen36_ready
-    selected_main_model="${CLAUDE_CODEX_ROUTER_MAIN_MODEL:-$qwen_main_model}"
-  elif [[ "$router_auth_mode" == "api" && -z "${CLAUDE_CODEX_ANTHROPIC_API_KEY:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+    selected_main_model="${CLAUDE_REASONIX_ROUTER_MAIN_MODEL:-${CLAUDE_CODEX_ROUTER_MAIN_MODEL:-$qwen_main_model}}"
+  elif [[ "$router_auth_mode" == "api" && -z "${CLAUDE_REASONIX_ANTHROPIC_API_KEY:-${CLAUDE_CODEX_ANTHROPIC_API_KEY:-}}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
     echo "warning: claude-codex router mode needs an Anthropic API key/token for CCR to preserve the main Claude model route" >&2
   elif [[ "$router_auth_mode" == "login" ]]; then
     echo "warning: claude-codex router-login is experimental; it only works if Claude Code sends its login auth to the local gateway" >&2
@@ -965,21 +965,21 @@ run_claude_with_router() {
   )
 
   local ccr_port
-  ccr_port="${CLAUDE_CODEX_CCR_PORT:-$(find_free_port)}"
+  ccr_port="${CLAUDE_REASONIX_CCR_PORT:-${CLAUDE_CODEX_CCR_PORT:-$(find_free_port)}}"
   local proxy_port
-  proxy_port="${CLAUDE_CODEX_CCR_PROXY_PORT:-$(find_free_port)}"
+  proxy_port="${CLAUDE_REASONIX_CCR_PROXY_PORT:-${CLAUDE_CODEX_CCR_PROXY_PORT:-$(find_free_port)}}"
   local agent_defs
   agent_defs="$(ccr_agents_json)"
-  local ccr_api_key="${CLAUDE_CODEX_CCR_API_KEY-claude-codex-router}"
+  local ccr_api_key="${CLAUDE_REASONIX_CCR_API_KEY:-${CLAUDE_CODEX_CCR_API_KEY-claude-codex-router}}"
   local passthrough_main=0
   if [[ "$router_auth_mode" == "login" ]]; then
-    ccr_api_key="${CLAUDE_CODEX_CCR_API_KEY-}"
+    ccr_api_key="${CLAUDE_REASONIX_CCR_API_KEY:-${CLAUDE_CODEX_CCR_API_KEY-}}"
     passthrough_main=1
   fi
   local custom_model_option="${ANTHROPIC_CUSTOM_MODEL_OPTION:-claude-reasonix-flash}"
   local custom_model_option_name="${ANTHROPIC_CUSTOM_MODEL_OPTION_NAME:-$custom_model_option}"
   local custom_model_option_description="${ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION:-Reasonix-backed native Claude Code subagent model routed by CCR}"
-  local forced_subagent_model="${CLAUDE_CODEX_SUBAGENT_MODEL:-${CLAUDE_CODEX_CCR_CODEX_MODEL:-claude-reasonix-flash}}"
+  local forced_subagent_model="${CLAUDE_REASONIX_SUBAGENT_MODEL:-${CLAUDE_CODEX_SUBAGENT_MODEL:-${CLAUDE_CODEX_CCR_CODEX_MODEL:-claude-reasonix-flash}}}"
   if [[ "$router_auth_mode" == "qwen" ]]; then
     custom_model_option="${ANTHROPIC_CUSTOM_MODEL_OPTION:-$selected_main_model}"
     custom_model_option_name="${ANTHROPIC_CUSTOM_MODEL_OPTION_NAME:-$selected_main_model}"
@@ -1063,7 +1063,7 @@ run_task() {
 }
 
 process_list() {
-  if [[ -n "${CLAUDE_CODEX_PS_FIXTURE:-}" ]]; then
+  if [[ -n "${CLAUDE_REASONIX_PS_FIXTURE:-${CLAUDE_CODEX_PS_FIXTURE:-}}" ]]; then
     cat "$CLAUDE_CODEX_PS_FIXTURE"
   else
     ps -axo pid=,command=
@@ -1071,7 +1071,7 @@ process_list() {
 }
 
 report_active_sessions() {
-  python3 - "$MCP_FILE" "${CLAUDE_CODEX_CODEX_MODEL:-${CODEX_FLEET_MODEL:-gpt-5.4}}" "$(current_workers)" "${CLAUDE_CODEX_PS_FIXTURE:-}" <<'PY'
+  python3 - "$MCP_FILE" "${CLAUDE_REASONIX_CODEX_MODEL:-${CLAUDE_CODEX_CODEX_MODEL:-${CODEX_FLEET_MODEL:-gpt-5.4}}}" "$(current_workers)" "${CLAUDE_REASONIX_PS_FIXTURE:-${CLAUDE_CODEX_PS_FIXTURE:-}}" <<'PY'
 import re
 import subprocess
 import sys
@@ -1156,7 +1156,7 @@ status() {
   echo "codex fleet: disabled"
   fi
   echo "default concurrency: $(current_workers)"
-  echo "gateway codex concurrency: ${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}"
+  echo "gateway codex concurrency: ${CLAUDE_REASONIX_GATEWAY_CODEX_CONCURRENCY:-${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}}"
   echo "fleet home: $FLEET_HOME"
   echo "install home: $INSTALL_HOME"
   report_active_sessions
@@ -1166,8 +1166,8 @@ doctor() {
   local ok=0
   [[ -f "$SETTINGS_FILE" ]] || { echo "missing $SETTINGS_FILE" >&2; ok=1; }
   [[ -f "$PROMPT_FILE" ]] || { echo "missing $PROMPT_FILE" >&2; ok=1; }
-  [[ -f "$INSTALL_HOME/hooks/only-codex-fleet.py" ]] || { echo "missing guard hook" >&2; ok=1; }
-  [[ -f "$INSTALL_HOME/hooks/codex-workflow.py" ]] || { echo "missing workflow hook" >&2; ok=1; }
+  [[ -f "$INSTALL_HOME/hooks/only-reasonix-fleet.py" ]] || { echo "missing guard hook" >&2; ok=1; }
+  [[ -f "$INSTALL_HOME/hooks/reasonix-workflow.py" ]] || { echo "missing workflow hook" >&2; ok=1; }
   [[ -f "$MCP_SERVER_FILE" ]] || { echo "missing $MCP_SERVER_FILE" >&2; ok=1; }
   [[ -f "$GATEWAY_FILE" ]] || { echo "missing $GATEWAY_FILE" >&2; ok=1; }
   [[ -f "$CCR_PROXY_FILE" ]] || { echo "missing $CCR_PROXY_FILE" >&2; ok=1; }
@@ -1253,7 +1253,7 @@ main() {
       ;;
     cost)
       shift || true
-      LEDGER="${CLAUDE_CODEX_REASONIX_COST_LEDGER:-$RUNTIME_DIR/reasonix-cost.jsonl}"
+      LEDGER="${CLAUDE_REASONIX_REASONIX_COST_LEDGER:-${CLAUDE_CODEX_REASONIX_COST_LEDGER:-$RUNTIME_DIR/reasonix-cost.jsonl}}"
       python3 - "$GATEWAY_FILE" "$LEDGER" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("g", sys.argv[1])

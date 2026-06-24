@@ -32,7 +32,7 @@ LOG_DIR = Path(os.getenv("CODEX_FLEET_LOG_DIR", "/Users/tatlatat/.claude/codex-f
 
 
 def fleet_flavor() -> str:
-    return os.getenv("CLAUDE_CODEX_FLAVOR", "codex").strip().lower()
+    return os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "codex")).strip().lower()
 
 
 _RX_GATEWAY = None
@@ -47,7 +47,7 @@ def _reasonix_gateway_module():
         return _RX_GATEWAY if _RX_GATEWAY is not False else None
     try:
         import importlib.util as _ilu
-        gw_path = Path(__file__).resolve().parent / "codex-native-gateway.py"
+        gw_path = Path(__file__).resolve().parent / "reasonix-native-gateway.py"
         spec = _ilu.spec_from_file_location("_rx_gateway", gw_path)
         mod = _ilu.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -100,12 +100,12 @@ async def run_one_task(task: dict[str, Any], index: int, batch_id: str, max_outp
                 "duration_ms": int((time.monotonic() - started) * 1000)}
     cwd = task.get("cwd")
     cwd_text = str(cwd) if cwd else os.getcwd()
-    model = task_value(task, "model", "CLAUDE_CODEX_REASONIX_MODEL", "deepseek-v4-flash")
+    model = task_value(task, "model", "CLAUDE_REASONIX_REASONIX_MODEL", "deepseek-v4-flash")
     config = {"reasonix_bin": os.getenv("REASONIX_BIN", "reasonix"),
               "target_model": model}
     # run_reasonix_acp reads cwd from CLAUDE_CODEX_GATEWAY_CODEX_CWD.
-    prev_cwd = os.environ.get("CLAUDE_CODEX_GATEWAY_CODEX_CWD")
-    os.environ["CLAUDE_CODEX_GATEWAY_CODEX_CWD"] = cwd_text
+    prev_cwd = os.environ.get("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", os.environ.get("CLAUDE_REASONIX_GATEWAY_CODEX_CWD"))
+    os.environ["CLAUDE_REASONIX_GATEWAY_CODEX_CWD"] = cwd_text
     try:
         loop = asyncio.get_running_loop()
         text, usage = await loop.run_in_executor(None, rx, prompt, config)
@@ -115,17 +115,17 @@ async def run_one_task(task: dict[str, Any], index: int, batch_id: str, max_outp
                 "duration_ms": int((time.monotonic() - started) * 1000)}
     finally:
         if prev_cwd is None:
-            os.environ.pop("CLAUDE_CODEX_GATEWAY_CODEX_CWD", None)
+            os.environ.pop("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", None)
         else:
-            os.environ["CLAUDE_CODEX_GATEWAY_CODEX_CWD"] = prev_cwd
+            os.environ["CLAUDE_REASONIX_GATEWAY_CODEX_CWD"] = prev_cwd
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     Path(stdout_path).write_text(text or "", encoding="utf-8")
     # Record the lane in the per-session cost ledger so `claude-reasonix cost`
     # counts MCP-dispatched subagents too (same ledger as gateway lanes).
     try:
         gw = _reasonix_gateway_module()
-        ledger = os.getenv("CLAUDE_CODEX_REASONIX_COST_LEDGER",
-                           str(LOG_DIR.parent / "reasonix-cost.jsonl"))
+        ledger = os.getenv("CLAUDE_REASONIX_REASONIX_COST_LEDGER", os.getenv("CLAUDE_CODEX_REASONIX_COST_LEDGER",
+                           str(LOG_DIR.parent / "reasonix-cost.jsonl")))
         if gw is not None and hasattr(gw, "append_reasonix_cost"):
             gw.append_reasonix_cost(ledger, usage, cwd=cwd_text, model=model,
                                     claude_equiv=usage.get("reasonix_claude_equiv_usd"))

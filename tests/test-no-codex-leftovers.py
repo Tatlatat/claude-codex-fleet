@@ -1,4 +1,5 @@
 from __future__ import annotations
+import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -10,15 +11,19 @@ ALLOW_SUBSTR = ("tests/test-no-codex-leftovers.py", "/docs/", "/patches/", "READ
 
 
 def shipped_files():
-    for p in ROOT.rglob("*"):
+    # Scan only git-TRACKED files — that is exactly the set that gets published.
+    # This auto-excludes scratch (the SDD ledger, .bak, runtime/*.jsonl) without an
+    # ever-growing allow-list, so the guard measures the real publish surface.
+    tracked = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files"],
+        capture_output=True, text=True, check=True).stdout.splitlines()
+    for rel in tracked:
+        p = ROOT / rel
         if not p.is_file():
             continue
-        s = str(p)
-        if "/.git/" in s or "__pycache__" in s or s.endswith((".bak", ".port", ".jsonl")):
+        if "/runtime/" in rel or rel.startswith("runtime/"):
             continue
-        if "/runtime/" in s:
-            continue
-        if any(a in s for a in ALLOW_SUBSTR):
+        if any(a in str(p) or a.lstrip("/") in rel for a in ALLOW_SUBSTR):
             continue
         if p.suffix in (".py", ".sh", ".json", ".md", "") or p.name == "claude-reasonix":
             yield p

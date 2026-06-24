@@ -21,8 +21,8 @@ HOOKS = ROOT / "hooks"
 sys.path.insert(0, str(HOOKS))
 import workflow_selfheal as sh  # noqa: E402
 
-# Load codex-workflow.py (dash in name) to exercise the wrapper source.
-spec = importlib.util.spec_from_file_location("codex_workflow", HOOKS / "codex-workflow.py")
+# Load reasonix-workflow.py (dash in name) to exercise the wrapper source.
+spec = importlib.util.spec_from_file_location("reasonix_workflow", HOOKS / "reasonix-workflow.py")
 cw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cw)
 

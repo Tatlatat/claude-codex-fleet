@@ -28,7 +28,7 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
-GW_PATH = ROOT / "codex-native-gateway.py"
+GW_PATH = ROOT / "reasonix-native-gateway.py"
 
 spec = importlib.util.spec_from_file_location("codex_native_gateway_hb", GW_PATH)
 gw = importlib.util.module_from_spec(spec)

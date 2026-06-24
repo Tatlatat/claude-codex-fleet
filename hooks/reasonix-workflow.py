@@ -248,7 +248,7 @@ def rewrite_agent_calls(script: str) -> tuple[str, int]:
 
 
 def workflow_mode() -> str:
-    mode = os.getenv("CLAUDE_CODEX_WORKFLOW_MODE", "fleet").lower()
+    mode = os.getenv("CLAUDE_REASONIX_WORKFLOW_MODE", os.getenv("CLAUDE_CODEX_WORKFLOW_MODE", "fleet")).lower()
     if mode in {"native", "gateway", "native-gateway", "native_gateway"}:
         return "native"
     if mode in {"router", "ccr", "claude-code-router", "claude_code_router"}:
@@ -257,7 +257,7 @@ def workflow_mode() -> str:
 
 
 def wrapper_source_native() -> str:
-    flavor = os.getenv("CLAUDE_CODEX_FLAVOR", "codex")
+    flavor = os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "codex"))
     return r"""
 // Injected by claude-codex: real Claude Code Workflow remains active, and
 // each workflow worker lane is routed to a native Codex/DeepSeek subagent type.
@@ -386,7 +386,7 @@ def resolve_named_workflow(tool_input: dict, cwd: str | None) -> str | None:
 
 
 def main() -> int:
-    if os.getenv("CLAUDE_CODEX_WORKFLOW_REWRITE", "1").lower() in {"0", "false", "off", "no"}:
+    if os.getenv("CLAUDE_REASONIX_WORKFLOW_REWRITE", os.getenv("CLAUDE_CODEX_WORKFLOW_REWRITE", "1")).lower() in {"0", "false", "off", "no"}:
         return 0
 
     try:
@@ -467,7 +467,7 @@ def main() -> int:
         )
     if selfheal_context:
         additional_context = additional_context + "\n\n" + selfheal_context
-    if os.getenv("CLAUDE_CODEX_WORKFLOW_PREFIX_GUIDE", "1").lower() in {"1", "true", "yes", "on"}:
+    if os.getenv("CLAUDE_REASONIX_WORKFLOW_PREFIX_GUIDE", os.getenv("CLAUDE_CODEX_WORKFLOW_PREFIX_GUIDE", "1")).lower() in {"1", "true", "yes", "on"}:
         additional_context = additional_context + "\n\n" + PREFIX_GUIDE_TEXT
 
     print(

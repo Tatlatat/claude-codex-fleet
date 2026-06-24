@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 /Users/tatlatat/.claude/codex-fleet/hooks/codex-workflow.py",
+            "command": "/usr/bin/env python3 /Users/tatlatat/.claude/reasonix-fleet/hooks/reasonix-workflow.py",
             "timeout": 30
           }
         ]
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "/usr/bin/env python3 /Users/tatlatat/.claude/codex-fleet/hooks/only-codex-fleet.py",
+            "command": "/usr/bin/env python3 /Users/tatlatat/.claude/reasonix-fleet/hooks/only-reasonix-fleet.py",
             "timeout": 30
           }
         ]

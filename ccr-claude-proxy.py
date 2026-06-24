@@ -33,7 +33,7 @@ def forward_timeout() -> float:
     default 600s) so the gateway returns a clean 504 before this outer proxy cuts the
     socket. The old hard-coded 3600s let a wedged upstream hang a subagent for an hour.
     """
-    return float(os.getenv("CLAUDE_CODEX_CCR_PROXY_TIMEOUT", "660"))
+    return float(os.getenv("CLAUDE_REASONIX_CCR_PROXY_TIMEOUT", os.getenv("CLAUDE_CODEX_CCR_PROXY_TIMEOUT", "660")))
 
 
 def json_bytes(data: Any) -> bytes:
@@ -43,7 +43,7 @@ def json_bytes(data: Any) -> bytes:
 def trace_enabled() -> bool:
     # On by default so forward/response/timeout events land in the proxy log; the
     # records are one compact JSON line each. Set CLAUDE_CODEX_CCR_PROXY_TRACE=0 to silence.
-    return os.getenv("CLAUDE_CODEX_CCR_PROXY_TRACE", "1").lower() in TRUE_VALUES
+    return os.getenv("CLAUDE_REASONIX_CCR_PROXY_TRACE", os.getenv("CLAUDE_CODEX_CCR_PROXY_TRACE", "1")).lower() in TRUE_VALUES
 
 
 def system_texts(system: Any) -> list[str]:

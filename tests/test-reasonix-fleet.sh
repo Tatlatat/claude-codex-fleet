@@ -3,10 +3,10 @@ set -euo pipefail
 
 ROOT="/Users/tatlatat/.claude/codex-fleet"
 LAUNCHER="/Users/tatlatat/.local/bin/claude-codex"
-HOOK="$ROOT/hooks/only-codex-fleet.py"
-WORKFLOW_HOOK="$ROOT/hooks/codex-workflow.py"
-MCP_SERVER="$ROOT/codex-fleet-mcp.py"
-GATEWAY="$ROOT/codex-native-gateway.py"
+HOOK="$ROOT/hooks/only-reasonix-fleet.py"
+WORKFLOW_HOOK="$ROOT/hooks/reasonix-workflow.py"
+MCP_SERVER="$ROOT/reasonix-fleet-mcp.py"
+GATEWAY="$ROOT/reasonix-native-gateway.py"
 CCR_PROXY="$ROOT/ccr-claude-proxy.py"
 
 fail() {
@@ -338,7 +338,7 @@ config = servers["codex_fleet"]
 if config.get("command") != "/usr/bin/env":
     raise SystemExit("codex_fleet should start through /usr/bin/env")
 args = config.get("args", [])
-if "python3" not in args or not any(arg.endswith("codex-fleet-mcp.py") for arg in args):
+if "python3" not in args or not any(arg.endswith("reasonix-fleet-mcp.py") for arg in args):
     raise SystemExit(f"unexpected codex_fleet args: {args}")
 env = config.get("env", {})
 expected_model = os.environ.get("CODEX_FLEET_MODEL", "gpt-5.4")
@@ -997,8 +997,8 @@ python3 "$ROOT/tests/test-reasonix-cost-ledger.py" || fail "reasonix cost ledger
 
 # Hook flavor-awareness: reasonix flavor must NOT block the native Agent tool
 # (so subagents route to reasonix, not the codex_fleet MCP); codex flavor still blocks.
-echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=reasonix python3 "$ROOT/hooks/only-codex-fleet.py" >/dev/null 2>&1 && fail "reasonix flavor must STILL block Agent (push to reasonix MCP, not native which hangs)"
-echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=codex CLAUDE_CODEX_NATIVE_SUBAGENTS=0 python3 "$ROOT/hooks/only-codex-fleet.py" >/dev/null 2>&1 && fail "codex flavor must still block the Agent tool"
+echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=reasonix python3 "$ROOT/hooks/only-reasonix-fleet.py" >/dev/null 2>&1 && fail "reasonix flavor must STILL block Agent (push to reasonix MCP, not native which hangs)"
+echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_CODEX_FLAVOR=codex CLAUDE_CODEX_NATIVE_SUBAGENTS=0 python3 "$ROOT/hooks/only-reasonix-fleet.py" >/dev/null 2>&1 && fail "codex flavor must still block the Agent tool"
 echo "PASS: only-codex-fleet flavor-aware"
 
 python3 "$ROOT/tests/test-mcp-reasonix.py" || fail "mcp reasonix flavor regression"

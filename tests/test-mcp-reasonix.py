@@ -21,7 +21,7 @@ import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("codex_fleet_mcp", ROOT / "codex-fleet-mcp.py")
+spec = importlib.util.spec_from_file_location("codex_fleet_mcp", ROOT / "reasonix-fleet-mcp.py")
 mcp = importlib.util.module_from_spec(spec)
 assert spec and spec.loader
 

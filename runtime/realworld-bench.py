@@ -26,7 +26,7 @@ import concurrent.futures as cf
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-GATEWAY = ROOT / "codex-native-gateway.py"
+GATEWAY = ROOT / "reasonix-native-gateway.py"
 SLOW_SECS = float(os.getenv("REALWORLD_SLOW_SECS", "90"))
 
 
@@ -148,8 +148,8 @@ def run_all(port: int) -> dict:
     out["A_single"] = [a]
 
     # B — UltraCode-style fan-out: N small lanes, each one file, concurrently.
-    files = ["codex-native-gateway.py", "hooks/codex-workflow.py",
-             "system-prompt-reasonix.md", "README.md", "hooks/only-codex-fleet.py"]
+    files = ["reasonix-native-gateway.py", "hooks/reasonix-workflow.py",
+             "system-prompt-reasonix.md", "README.md", "hooks/only-reasonix-fleet.py"]
     prompts = [f"Read ONLY {ROOT}/{f} and summarize its purpose in one sentence." for f in files]
     with cf.ThreadPoolExecutor(max_workers=len(prompts)) as ex:
         out["B_fanout"] = list(ex.map(lambda p: lane(port, p), prompts))
@@ -170,7 +170,7 @@ def run_all(port: int) -> dict:
     # physically reachable, so it gets the strict cache gate; A/B/C get a realistic one.
     time.sleep(1)
     t_review = time.time()
-    shared = (ROOT / "codex-native-gateway.py").read_text(errors="ignore")[:16000]
+    shared = (ROOT / "reasonix-native-gateway.py").read_text(errors="ignore")[:16000]
     SHARED_BLOCK = ("You are reviewing this file for one concern. SHARED FILE (identical "
                     "for every lane):\n" + shared + "\n\nReply with one terse sentence.\n")
     dims = ["race conditions", "error handling", "naming", "dead code", "edge cases",

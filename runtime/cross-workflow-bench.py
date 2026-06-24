@@ -31,7 +31,7 @@ def start_gateway(keepalive: bool):
         env["PATH"] = bd + os.pathsep + env["PATH"]
     pf = ROOT / "runtime" / f"xwbench.{os.getpid()}.port"
     proc = subprocess.Popen(
-        [sys.executable, str(ROOT / "codex-native-gateway.py"), "--host", "127.0.0.1",
+        [sys.executable, str(ROOT / "reasonix-native-gateway.py"), "--host", "127.0.0.1",
          "--port", "0", "--port-file", str(pf)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     for _ in range(100):
@@ -74,7 +74,7 @@ def main():
 
     proc, port = start_gateway(bool(args.keepalive))
     # The shared codebase block — byte-IDENTICAL, placed FIRST in every lane.
-    shared = (ROOT / "codex-native-gateway.py").read_text(errors="ignore")[:16000]
+    shared = (ROOT / "reasonix-native-gateway.py").read_text(errors="ignore")[:16000]
     SHARED = "Analyze this codebase. SHARED CODEBASE (identical for every lane):\n" + shared + "\n\n"
     results = []
     try:
