@@ -21,15 +21,17 @@ def native_subagents_enabled() -> bool:
 
 
 def flavor() -> str:
-    return os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "codex")).strip().lower()
+    return os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "reasonix")).strip().lower()
 
 
 def payload_mentions_native_agent(payload) -> bool:
+    # reasonix-* are the current agentType names; codex-*/deepseek-* are accepted for
+    # back-compat with an in-flight session whose launcher predates the rename.
     for value in iter_strings(payload):
         lowered = value.lower()
-        if lowered.startswith(("codex-", "deepseek-")):
+        if lowered.startswith(("reasonix-", "codex-", "deepseek-")):
             return True
-        if "agent(codex-" in lowered or "agent(deepseek-" in lowered:
+        if "agent(reasonix-" in lowered or "agent(codex-" in lowered or "agent(deepseek-" in lowered:
             return True
     return False
 

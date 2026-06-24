@@ -203,51 +203,37 @@ console.log(JSON.stringify({off, on}));
     out = subprocess.run([node, "-e", probe], capture_output=True, text=True)
     expect(out.returncode == 0, f"wrapper JS failed to run: {out.stderr[:300]}")
     res = json.loads(out.stdout.strip().splitlines()[-1])
-    expect(res["off"] == "codex-worker", f"sentinel-on should force codex-worker, got {res['off']}")
-    expect(res["on"] == "deepseek-architecture", f"sentinel-off should keep deepseek, got {res['on']}")
+    expect(res["off"] == "reasonix-worker", f"sentinel-on should force reasonix-worker, got {res['off']}")
+    # deepseek-architecture was dropped; architecture/infra now folds into the reviewer.
+    expect(res["on"] == "reasonix-reviewer", f"sentinel-off architecture should map to reasonix-reviewer, got {res['on']}")
 
 
-def test_wrapper_reasonix_flavor_keeps_codex_agenttype_names():
-    """In reasonix flavor the wrapper must KEEP the codex-*/deepseek-* agentType
-    names (which --agents defines and only-codex-fleet.py whitelists) — NOT emit
-    reasonix-* names that exist nowhere. The engine is reasonix via the model
-    route (launcher points codex-*/deepseek-* model at claude-reasonix-flash);
-    the agentType is just a label that must stay in sync across wrapper, --agents,
-    and the hook. Emitting reasonix-worker here (an agentType --agents doesn't
-    define and the hook doesn't whitelist) was the root cause of reasonix lanes
-    failing / being hook-blocked."""
-    os.environ["CLAUDE_CODEX_FLAVOR"] = "reasonix"
+def test_wrapper_emits_reasonix_agenttype_names():
+    """The wrapper must emit the reasonix-* agentType names that --agents defines
+    and only-reasonix-fleet.py whitelists — never the dropped codex-*/deepseek-*
+    names. These three sites (wrapper emit, --agents definitions, hook whitelist)
+    must stay byte-identical; emitting a name no site defines hook-blocks the lane."""
+    os.environ["CLAUDE_REASONIX_FLAVOR"] = "reasonix"
     try:
         src = cw.wrapper_source_native()
-        expect("codex-worker" in src,
-               f"reasonix flavor must keep codex-worker agentType; got: {src[:300]}")
-        expect("reasonix-worker" not in src,
-               "reasonix flavor must NOT emit reasonix-worker (not in --agents / hook whitelist)")
+        expect("reasonix-worker" in src,
+               f"wrapper must emit reasonix-worker agentType; got: {src[:300]}")
+        # The dropped types must never be RETURNED (emitted as a lane's agentType).
+        # An explicit back-compat passthrough of a caller-supplied deepseek-* is fine.
+        expect("return 'deepseek-architecture'" not in src and "return 'deepseek-deep'" not in src,
+               "the dropped deepseek-* agentTypes must not be emitted as a role mapping")
     finally:
-        os.environ.pop("CLAUDE_CODEX_FLAVOR", None)
+        os.environ.pop("CLAUDE_REASONIX_FLAVOR", None)
 
 
-def test_wrapper_codex_flavor_regression():
-    """wrapper_source_native() must keep codex-worker/deepseek-* when flavor is unset or 'codex'."""
-    # Unset case
+def test_wrapper_emit_is_flavor_agnostic():
+    """The emit logic no longer branches on flavor (codex flavor was removed); an
+    unset flavor must still produce reasonix-* names, never the legacy codex-worker."""
+    os.environ.pop("CLAUDE_REASONIX_FLAVOR", None)
     os.environ.pop("CLAUDE_CODEX_FLAVOR", None)
-    try:
-        src = cw.wrapper_source_native()
-        expect("codex-worker" in src,
-               f"codex flavor (unset) must still produce codex-worker; got: {src[:300]}")
-        expect("deepseek-" in src,
-               "codex flavor (unset) must still reference deepseek-* types")
-    finally:
-        os.environ.pop("CLAUDE_CODEX_FLAVOR", None)
-
-    # Explicit codex case
-    os.environ["CLAUDE_CODEX_FLAVOR"] = "codex"
-    try:
-        src = cw.wrapper_source_native()
-        expect("codex-worker" in src,
-               f"codex flavor (explicit) must still produce codex-worker; got: {src[:300]}")
-    finally:
-        os.environ.pop("CLAUDE_CODEX_FLAVOR", None)
+    src = cw.wrapper_source_native()
+    expect("reasonix-worker" in src,
+           f"unset flavor must still produce reasonix-worker; got: {src[:300]}")
 
 
 def test_reasonix_cli_check_in_reasonix_flavor():
@@ -286,8 +272,8 @@ def main() -> int:
     test_gateway_detected_via_base_url_no_port_file()
     test_fail_open_on_bad_input()
     test_wrapper_honours_sentinel()
-    test_wrapper_reasonix_flavor_keeps_codex_agenttype_names()
-    test_wrapper_codex_flavor_regression()
+    test_wrapper_emits_reasonix_agenttype_names()
+    test_wrapper_emit_is_flavor_agnostic()
     test_reasonix_cli_check_in_reasonix_flavor()
     print("PASS: workflow self-heal preflight + wrapper sentinel")
     return 0

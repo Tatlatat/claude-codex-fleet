@@ -257,7 +257,7 @@ def workflow_mode() -> str:
 
 
 def wrapper_source_native() -> str:
-    flavor = os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "codex"))
+    flavor = os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR", "reasonix"))
     return r"""
 // Injected by claude-codex: real Claude Code Workflow remains active, and
 // each workflow worker lane is routed to a native Codex/DeepSeek subagent type.
@@ -269,34 +269,29 @@ const __claudeCodexNativeAgentType = (opts = {}) => {
   // which needs no key, instead of 401-ing on claude-deepseek-pro.
   const forceCodexOnly = Boolean(globalThis.__claudeCodexForceCodexOnly)
 
-  // NOTE: both codex AND reasonix flavors use the SAME codex-*/deepseek-* agentType
-  // NAMES below. These names are just labels that must stay in sync with the
-  // --agents definitions and the only-codex-fleet.py whitelist. In reasonix flavor
-  // the launcher already points the codex-* / deepseek-* agent MODEL at
-  // claude-reasonix-flash, so the lane runs on Reasonix while keeping the codex-*
-  // label. Emitting reasonix-* names here (an agentType --agents never defines and
-  // the hook never whitelists) was what broke reasonix lanes.
+  // NOTE: these agentType NAMES are just labels that must stay in sync with the
+  // --agents definitions (launcher) and the only-reasonix-fleet.py whitelist. The
+  // launcher points each reasonix-* agent MODEL at claude-reasonix-flash, so the
+  // lane runs on Reasonix. Emitting a name --agents never defines / the hook never
+  // whitelists breaks the lane — keep all three sites byte-identical.
+  // Back-compat: a caller may still pass an explicit legacy codex-*/deepseek-*
+  // agentType (a session whose launcher predates this rename); pass it through.
 
+  if (explicit.startsWith('reasonix-')) return explicit
   if (explicit.startsWith('codex-')) return explicit
-  if (explicit.startsWith('deepseek-')) return forceCodexOnly ? 'codex-worker' : explicit
+  if (explicit.startsWith('deepseek-')) return forceCodexOnly ? 'reasonix-worker' : explicit
 
   const hint = [opts.label, opts.phase, explicit].filter(Boolean).join(' ').toLowerCase()
-  if (hint.includes('security')) return 'codex-security'
-  if (hint.includes('verify') || hint.includes('test')) return 'codex-verify'
-  if (hint.includes('review')) return 'codex-reviewer'
-  if (!forceCodexOnly && (hint.includes('architecture') || hint.includes('infra') || hint.includes('devops'))) return 'deepseek-architecture'
-  if (
-    !forceCodexOnly && (
-      hint.includes('database') ||
-      hint.includes(' deep') ||
-      hint.includes(':deep') ||
-      hint.includes('mcp') ||
-      hint.includes('extraction') ||
-      hint.includes('stripe') ||
-      hint.includes('signup')
-    )
-  ) return 'deepseek-deep'
-  return 'codex-worker'
+  if (hint.includes('security')) return 'reasonix-security'
+  if (hint.includes('verify') || hint.includes('test')) return 'reasonix-verify'
+  if (hint.includes('review')) return 'reasonix-reviewer'
+  // architecture/infra lanes fold into the reviewer (weighs system boundaries);
+  // deep/database/mcp lanes fold into the general worker. The dedicated
+  // deepseek-architecture / deepseek-deep agentTypes were dropped. Under the
+  // force-only sentinel (a degraded session), collapse role-inference to the
+  // plain worker so every lane takes the simplest keyless route.
+  if (!forceCodexOnly && (hint.includes('architecture') || hint.includes('infra') || hint.includes('devops'))) return 'reasonix-reviewer'
+  return 'reasonix-worker'
 }
 
 const __codexWorkflowAgent = async (prompt, opts = {}) => {

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/Users/tatlatat/.claude/codex-fleet"
-LAUNCHER="/Users/tatlatat/.local/bin/claude-codex"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LAUNCHER="$ROOT/bin/claude-reasonix"
 HOOK="$ROOT/hooks/only-reasonix-fleet.py"
 WORKFLOW_HOOK="$ROOT/hooks/reasonix-workflow.py"
 MCP_SERVER="$ROOT/reasonix-fleet-mcp.py"
@@ -42,13 +42,18 @@ grep -qi "ALWAYS delegate" "$RX_PROMPT" || fail "reasonix prompt must list alway
 grep -qi "Claude keeps these" "$RX_PROMPT" || fail "reasonix prompt must list what Claude keeps doing"
 grep -qi "look at the agent first\|agent does it" "$RX_PROMPT" || fail "reasonix prompt must teach look-at-agent-first decision"
 
-python3 - "$ROOT/bridge-settings.json" "$WORKFLOW_HOOK" <<'PY'
+python3 - "$ROOT/bridge-settings.json" "$WORKFLOW_HOOK" "$ROOT" <<'PY'
 import json
 import sys
 
-settings_path, workflow_hook = sys.argv[1:]
+settings_path, workflow_hook, install_home = sys.argv[1:4]
 with open(settings_path, "r", encoding="utf-8") as fh:
-    settings = json.load(fh)
+    raw = fh.read()
+# bridge-settings.json is a portable template; the launcher renders __INSTALL_HOME__
+# to the real install dir before passing it to `claude`. Render the same way here.
+if "__INSTALL_HOME__" not in raw:
+    raise SystemExit("bridge settings must stay a portable template (__INSTALL_HOME__ placeholder)")
+settings = json.loads(raw.replace("__INSTALL_HOME__", install_home))
 
 if settings.get("ultracode") is not False:
     raise SystemExit("bridge settings must explicitly avoid auto-enabling ultracode mode")
@@ -62,7 +67,7 @@ commands = [
     for hook in group.get("hooks", [])
 ]
 if not any(workflow_hook in command for command in commands):
-    raise SystemExit("bridge settings must install the Codex Workflow rewrite hook")
+    raise SystemExit("bridge settings must install the Reasonix Workflow rewrite hook")
 
 permissions = settings.get("permissions", {}).get("allow", [])
 required = {
@@ -77,6 +82,9 @@ PY
 tmp_home="$(mktemp -d)"
 trap 'rm -rf "$tmp_home"' EXIT
 
+# Point the launcher at the REPO as its install home so it loads the renamed
+# gateway/mcp/hooks/settings under test (not a stale ~/.claude install).
+export CLAUDE_REASONIX_FLEET_INSTALL_HOME="$ROOT"
 export CLAUDE_CODEX_FLEET_HOME="$tmp_home/fleet"
 export CLAUDE_BIN="/bin/echo"
 export CODEX_BIN="/bin/echo"
@@ -257,9 +265,11 @@ openai_prompt = module.openai_messages_to_prompt(
         }
     ],
 )
+# Case-insensitive: the prompt phrases the one-object rule as "EXACTLY ONE JSON
+# object" (uppercase for emphasis); match on intent, not exact casing.
 for required_text in (
     "STRUCTURED OUTPUT REQUIREMENT",
-    "exactly one JSON object",
+    "exactly one json object",
     "sourceQuality",
     '"primary"',
     '"unreliable"',
@@ -267,7 +277,7 @@ for required_text in (
     '"importance"',
     '"central"',
 ):
-    if required_text not in openai_prompt:
+    if required_text.lower() not in openai_prompt.lower():
         raise SystemExit(f"OpenAI StructuredOutput prompt omitted schema detail {required_text!r}: {openai_prompt}")
 
 anthropic_prompt = module.openai_messages_to_prompt(
@@ -534,10 +544,12 @@ printf '{"tool_name":"Edit"}' | python3 "$HOOK"
 if printf '{"tool_name":"Agent"}' | python3 "$HOOK" 2>/dev/null; then
   fail "hook should block Claude subagent tools"
 fi
+printf '{"tool_name":"Agent","tool_input":{"subagent_type":"reasonix-security"}}' | CLAUDE_CODEX_NATIVE_SUBAGENTS=1 python3 "$HOOK"
+# Legacy codex-*/deepseek-* agentTypes are still whitelisted for in-flight back-compat.
 printf '{"tool_name":"Agent","tool_input":{"subagent_type":"codex-security"}}' | CLAUDE_CODEX_NATIVE_SUBAGENTS=1 python3 "$HOOK"
 printf '{"tool_name":"Agent","tool_input":{"subagent_type":"deepseek-deep"}}' | CLAUDE_CODEX_NATIVE_SUBAGENTS=1 python3 "$HOOK"
 if printf '{"tool_name":"Agent","tool_input":{"subagent_type":"Explore"}}' | CLAUDE_CODEX_NATIVE_SUBAGENTS=1 python3 "$HOOK" 2>/dev/null; then
-  fail "native mode should still block non-Codex/non-DeepSeek agents"
+  fail "native mode should still block non-Reasonix agents"
 fi
 if printf '{"tool_name":"Task"}' | python3 "$HOOK" 2>/dev/null; then
   fail "hook should block Claude task tools"
@@ -586,10 +598,10 @@ if "await __codexWorkflowAgent('inspect security'" not in script:
     raise SystemExit("Workflow hook did not rewrite agent calls")
 if "mcp__codex_fleet__run_codex_worker" in script:
     raise SystemExit("native Workflow hook should not route through Codex Fleet MCP")
-if "codex-security" not in script:
-    raise SystemExit("native Workflow hook should include a Codex security agent mapping")
-if "deepseek-deep" not in script:
-    raise SystemExit("native Workflow hook should include a DeepSeek deep agent mapping")
+if "reasonix-security" not in script:
+    raise SystemExit("native Workflow hook should include a Reasonix security agent mapping")
+if "reasonix-worker" not in script:
+    raise SystemExit("native Workflow hook should include a Reasonix worker mapping (deep folds into worker)")
 if "native Claude Code subagents" not in out["hookSpecificOutput"].get("additionalContext", ""):
     raise SystemExit("Workflow hook should add context about the rewrite")
 PY
@@ -620,8 +632,8 @@ out = json.loads(proc.stdout)
 script = out["hookSpecificOutput"]["updatedInput"]["script"]
 if "__codexWorkflowAgent" not in script:
     raise SystemExit("router Workflow hook did not inject Codex wrapper")
-if "codex-security" not in script:
-    raise SystemExit("router Workflow hook should route security lanes to codex-security")
+if "reasonix-security" not in script:
+    raise SystemExit("router Workflow hook should route security lanes to reasonix-security")
 if "mcp__codex_fleet__run_codex_worker" in script:
     raise SystemExit("router Workflow hook should not route through Codex Fleet MCP")
 context = out["hookSpecificOutput"].get("additionalContext", "")
@@ -667,18 +679,20 @@ import sys
 with open(sys.argv[1], "r", encoding="utf-8") as fh:
     agents = json.load(fh)
 required = {
-    "codex-worker": "claude-reasonix-flash",
-    "codex-security": "claude-reasonix-flash",
-    "codex-reviewer": "claude-reasonix-flash",
-    "codex-verify": "claude-reasonix-flash",
-    "deepseek-deep": "claude-reasonix-flash",
-    "deepseek-architecture": "claude-reasonix-flash",
+    "reasonix-worker": "claude-reasonix-flash",
+    "reasonix-security": "claude-reasonix-flash",
+    "reasonix-reviewer": "claude-reasonix-flash",
+    "reasonix-verify": "claude-reasonix-flash",
 }
 for name, model in required.items():
     if agents.get(name, {}).get("model") != model:
         raise SystemExit(f"missing native agent {name} with model {model}: {agents.get(name)}")
     if agents[name].get("effort") != "xhigh":
         raise SystemExit(f"native agent {name} should use xhigh effort: {agents[name]}")
+# The dropped deepseek-* agentTypes must no longer be generated.
+for gone in ("deepseek-deep", "deepseek-architecture"):
+    if gone in agents:
+        raise SystemExit(f"dropped agentType {gone} should not be in agents.json: {agents[gone]}")
 PY
 
 port_file="$tmp_home/gateway.port"

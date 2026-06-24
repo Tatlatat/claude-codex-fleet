@@ -9,6 +9,7 @@ ENABLED_FILE="$STATE_DIR/enabled"
 WORKERS_FILE="$STATE_DIR/workers"
 MCP_FILE="$RUNTIME_DIR/mcp.json"
 SETTINGS_FILE="$INSTALL_HOME/bridge-settings.json"
+RENDERED_SETTINGS="$RUNTIME_DIR/bridge-settings.rendered.json"
 PROMPT_FILE="$INSTALL_HOME/system-prompt-reasonix.md"
 MCP_SERVER_FILE="$INSTALL_HOME/reasonix-fleet-mcp.py"
 GATEWAY_FILE="$INSTALL_HOME/reasonix-native-gateway.py"
@@ -121,6 +122,22 @@ EOF
 
 ensure_dirs() {
   mkdir -p "$STATE_DIR" "$RUNTIME_DIR"
+}
+
+# bridge-settings.json is a portable template: the hook commands carry the
+# __INSTALL_HOME__ placeholder so the repo holds no machine path. Render a runtime
+# copy with the real INSTALL_HOME substituted and hand THAT to `claude --settings`.
+render_settings() {
+  ensure_dirs
+  python3 - "$SETTINGS_FILE" "$INSTALL_HOME" "$RENDERED_SETTINGS" <<'PY'
+import sys
+src, install_home, dst = sys.argv[1:4]
+with open(src, "r", encoding="utf-8") as fh:
+    text = fh.read()
+text = text.replace("__INSTALL_HOME__", install_home)
+with open(dst, "w", encoding="utf-8") as fh:
+    fh.write(text)
+PY
 }
 
 prepare_router_runtime() {
@@ -287,33 +304,23 @@ reasonix_prompt = (
 )
 
 agents = {
-    "codex-worker": agent(
+    "reasonix-worker": agent(
         "General Reasonix worker for implementation, file analysis, repo search, and focused worker lanes.",
         reasonix_prompt,
         reasonix_model,
     ),
-    "codex-security": agent(
+    "reasonix-security": agent(
         "Reasonix security review worker. Use for security, auth, secrets, permissions, injection, and abuse-case lanes.",
         reasonix_prompt,
         reasonix_model,
     ),
-    "codex-reviewer": agent(
-        "Reasonix code-review worker. Use for CodeReview lanes, regression checks, and independent diff review.",
+    "reasonix-reviewer": agent(
+        "Reasonix code-review worker. Use for CodeReview lanes, regression checks, architecture/infra review, and independent diff review.",
         reasonix_prompt,
         reasonix_model,
     ),
-    "codex-verify": agent(
+    "reasonix-verify": agent(
         "Reasonix verification worker. Use for test, verify, reproduction, and acceptance-criteria lanes.",
-        reasonix_prompt,
-        reasonix_model,
-    ),
-    "deepseek-deep": agent(
-        "Reasonix deep-analysis worker. Use for database, MCP, extraction, payment/signup, and broad deep-dive lanes.",
-        reasonix_prompt,
-        reasonix_model,
-    ),
-    "deepseek-architecture": agent(
-        "Reasonix architecture and infrastructure worker. Use for architecture, infra, devops, dependency, and system-design lanes.",
         reasonix_prompt,
         reasonix_model,
     ),
@@ -405,39 +412,29 @@ qwen_prompt = with_ccr_tag(
 )
 
 agents = {
-    "codex-worker": agent(
-        "General Codex worker for implementation, file analysis, repo search, and focused worker lanes.",
+    "reasonix-worker": agent(
+        "General Reasonix worker for implementation, file analysis, repo search, and focused worker lanes.",
         codex_prompt,
         codex_model,
     ),
-    # Prefix-cache stability: keep the per-ROUTE base (codex/deepseek/qwen genuinely
-    # route to different models) but drop the per-ROLE suffix that used to fork a
-    # fresh prefix family per agent type. Role intent rides the task tail + the
-    # distinct `description` Claude routes on; same-route lanes now share one prefix.
-    "codex-security": agent(
-        "Codex security review worker. Use for security, auth, secrets, permissions, injection, and abuse-case lanes.",
+    # Prefix-cache stability: keep the per-ROUTE base (reasonix/qwen genuinely route
+    # to different models) but drop the per-ROLE suffix that used to fork a fresh
+    # prefix family per agent type. Role intent rides the task tail + the distinct
+    # `description` Claude routes on; same-route lanes now share one prefix.
+    "reasonix-security": agent(
+        "Reasonix security review worker. Use for security, auth, secrets, permissions, injection, and abuse-case lanes.",
         codex_prompt,
         codex_model,
     ),
-    "codex-reviewer": agent(
-        "Codex code-review worker. Use for CodeReview lanes, regression checks, and independent diff review.",
+    "reasonix-reviewer": agent(
+        "Reasonix code-review worker. Use for CodeReview lanes, regression checks, architecture/infra review, and independent diff review.",
         codex_prompt,
         codex_model,
     ),
-    "codex-verify": agent(
-        "Codex verification worker. Use for test, verify, reproduction, and acceptance-criteria lanes.",
+    "reasonix-verify": agent(
+        "Reasonix verification worker. Use for test, verify, reproduction, and acceptance-criteria lanes.",
         codex_prompt,
         codex_model,
-    ),
-    "deepseek-deep": agent(
-        "DeepSeek deep-analysis worker. Use for database, MCP, extraction, payment/signup, and broad deep-dive lanes.",
-        deepseek_prompt,
-        deepseek_model,
-    ),
-    "deepseek-architecture": agent(
-        "DeepSeek architecture and infrastructure worker. Use for architecture, infra, devops, dependency, and system-design lanes.",
-        deepseek_prompt,
-        deepseek_model,
     ),
     "qwen-worker": agent(
         "Local Qwen3.6 worker. Use for cheap repo exploration, broad search, first-pass bug hunting, and local reasoning lanes.",
@@ -878,11 +875,12 @@ run_claude_with_fleet() {
   }
 
   generate_config >/dev/null
+  render_settings
   local prompt
   prompt="$(bridge_prompt)"
   local base_args=(
     --mcp-config "$MCP_FILE"
-    --settings "$SETTINGS_FILE"
+    --settings "$RENDERED_SETTINGS"
     --append-system-prompt "$prompt"
   )
 
@@ -952,6 +950,7 @@ run_claude_with_router() {
   fi
 
   generate_config >/dev/null
+  render_settings
   local prompt
   if [[ "$CLAUDE_CODEX_FLAVOR" == "reasonix" && -f "$INSTALL_HOME/system-prompt-reasonix.md" ]]; then
     prompt="$(cat "$INSTALL_HOME/system-prompt-reasonix.md")"
@@ -960,7 +959,7 @@ run_claude_with_router() {
   fi
   local base_args=(
     --mcp-config "$MCP_FILE"
-    --settings "$SETTINGS_FILE"
+    --settings "$RENDERED_SETTINGS"
     --append-system-prompt "$prompt"
   )
 
