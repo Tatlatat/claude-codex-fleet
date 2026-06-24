@@ -87,7 +87,7 @@ trap 'rm -rf "$tmp_home"' EXIT
 export CLAUDE_REASONIX_FLEET_INSTALL_HOME="$ROOT"
 export CLAUDE_REASONIX_FLEET_HOME="$tmp_home/fleet"
 export CLAUDE_BIN="/bin/echo"
-export CODEX_BIN="/bin/echo"
+export REASONIX_BIN="/bin/echo"
 export CCR_BIN="/bin/echo"
 export ANTHROPIC_API_KEY="test-anthropic-key"
 export CLAUDE_REASONIX_GATEWAY_MOCK=1
@@ -112,7 +112,7 @@ import sys
 import time
 
 gateway_path = sys.argv[1]
-os.environ["CLAUDE_REASONIX_CODEX_BACKEND"] = "codex-cli"
+os.environ["CLAUDE_REASONIX_BACKEND"] = "codex-cli"
 os.environ.pop("CLAUDE_REASONIX_GATEWAY_MOCK", None)
 # Force the wait loop to tick quickly so a heartbeat is emitted before the result.
 os.environ["CLAUDE_REASONIX_GATEWAY_STREAM_KEEPALIVE_SECONDS"] = "1"
@@ -207,13 +207,13 @@ import os
 import sys
 
 gateway_path = sys.argv[1]
-os.environ.pop("CLAUDE_REASONIX_GATEWAY_CODEX_TIMEOUT", None)
+os.environ.pop("CLAUDE_REASONIX_GATEWAY_TIMEOUT", None)
 os.environ.pop("REASONIX_FLEET_TIMEOUT_SECONDS", None)
 spec = importlib.util.spec_from_file_location("reasonix_native_gateway_timeout_default", gateway_path)
 module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(module)
-default = module.env_first("CLAUDE_REASONIX_GATEWAY_CODEX_TIMEOUT", "REASONIX_FLEET_TIMEOUT_SECONDS", default="600")
+default = module.env_first("CLAUDE_REASONIX_GATEWAY_TIMEOUT", "REASONIX_FLEET_TIMEOUT_SECONDS", default="600")
 if float(default) < 600:
     raise SystemExit(f"reasonix timeout default must be >= 600s, got {default}")
 PY
@@ -354,8 +354,8 @@ if "python3" not in args or not any(arg.endswith("reasonix-fleet-mcp.py") for ar
     raise SystemExit(f"unexpected reasonix_fleet args: {args}")
 env = config.get("env", {})
 expected_model = os.environ.get("REASONIX_FLEET_MODEL", "gpt-5.4")
-if env.get("CODEX_BIN") != "/bin/echo":
-    raise SystemExit(f"CODEX_BIN was not forwarded: {env}")
+if env.get("REASONIX_BIN") != "/bin/echo":
+    raise SystemExit(f"REASONIX_BIN was not forwarded: {env}")
 if env.get("REASONIX_FLEET_DEFAULT_CONCURRENCY") != "3":
     raise SystemExit(f"default concurrency was not forwarded: {env}")
 if env.get("REASONIX_FLEET_MODEL") != expected_model:
@@ -393,7 +393,7 @@ fi
 router_output="$("$LAUNCHER" router "router prompt")"
 grep -q -- " --agents {" <<<"$router_output" || fail "router mode should pass native subagent definitions"
 grep -q "claude-reasonix-flash" <<<"$router_output" || fail "router mode should include the Reasonix-backed model"
-grep -q "<CCR-SUBAGENT-MODEL>codex-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>" <<<"$router_output" || fail "router mode should tag worker agents for CCR via codex-gateway"
+grep -q "<CCR-SUBAGENT-MODEL>reasonix-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>" <<<"$router_output" || fail "router mode should tag worker agents for CCR via reasonix-gateway"
 grep -q "router prompt" <<<"$router_output" || fail "router mode should forward prompt args"
 if grep -q -- "--disallowedTools Agent,Task" <<<"$router_output"; then
   fail "router mode should not globally block Agent/Task"
@@ -401,7 +401,7 @@ fi
 
 router_login_output="$("$LAUNCHER" router-login "router login prompt")"
 grep -q -- " --agents {" <<<"$router_login_output" || fail "router-login mode should pass native subagent definitions"
-grep -q "<CCR-SUBAGENT-MODEL>codex-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>" <<<"$router_login_output" || fail "router-login mode should tag worker agents for CCR via codex-gateway"
+grep -q "<CCR-SUBAGENT-MODEL>reasonix-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>" <<<"$router_login_output" || fail "router-login mode should tag worker agents for CCR via reasonix-gateway"
 grep -q "router login prompt" <<<"$router_login_output" || fail "router-login mode should forward prompt args"
 if grep -q -- "--disallowedTools Agent,Task" <<<"$router_login_output"; then
   fail "router-login mode should not globally block Agent/Task"
@@ -479,7 +479,7 @@ grep -q "CLAUDE_CODE_SUBAGENT_MODEL=inherit" <<<"$router_env_inherit_output" || 
 router_qwen_env_output="$(CLAUDE_BIN="$claude_env_mock" "$LAUNCHER" router-qwen "router qwen env prompt")"
 grep -q "CLAUDE_CODE_SUBAGENT_MODEL=claude-reasonix-flash" <<<"$router_qwen_env_output" || fail "router-qwen should still force subagents to the Reasonix-backed model by default"
 grep -q "ANTHROPIC_BASE_URL=http://127.0.0.1:" <<<"$router_qwen_env_output" || fail "router-qwen should point Claude at the scoped CCR proxy"
-grep -q "ANTHROPIC_AUTH_TOKEN=claude-codex-router" <<<"$router_qwen_env_output" || fail "router-qwen should authenticate Claude to the scoped CCR proxy"
+grep -q "ANTHROPIC_AUTH_TOKEN=claude-reasonix-router" <<<"$router_qwen_env_output" || fail "router-qwen should authenticate Claude to the scoped CCR proxy"
 grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION=claude-reasonix-flash" <<<"$router_qwen_env_output" || fail "router-qwen should expose the reasonix model id as Claude Code's custom model option"
 grep -q "ANTHROPIC_CUSTOM_MODEL_OPTION_NAME=qwen36-mlx" <<<"$router_qwen_env_output" || fail "router-qwen should name Claude Code's custom model option as Qwen"
 grep -q -- "--model qwen36-mlx" <<<"$router_qwen_env_output" || fail "router-qwen env smoke should still select the local Qwen model"
@@ -499,19 +499,19 @@ router = config.get("Router", {})
 if router.get("default") != "anthropic,claude-opus-4-8":
     raise SystemExit(f"router default should preserve Opus: {router}")
 providers = {provider.get("name"): provider for provider in config.get("Providers", [])}
-for name in ("anthropic", "codex-gateway", "deepseek-gateway", "qwen36-local"):
+for name in ("anthropic", "reasonix-gateway", "deepseek-gateway", "qwen36-local"):
     if name not in providers:
         raise SystemExit(f"missing CCR provider {name}: {providers}")
 ccr_providers = {provider.get("name"): provider for provider in config.get("providers", [])}
-for name in ("anthropic", "codex-gateway", "deepseek-gateway", "qwen36-local"):
+for name in ("anthropic", "reasonix-gateway", "deepseek-gateway", "qwen36-local"):
     if name not in ccr_providers:
         raise SystemExit(f"missing lowercase CCR provider {name}: {ccr_providers}")
 if "claude-opus-4-8" not in providers["anthropic"].get("models", []):
     raise SystemExit(f"anthropic provider should advertise claude-opus-4-8: {providers['anthropic']}")
 if ccr_providers["anthropic"].get("transformer", {}).get("use") != ["Anthropic"]:
     raise SystemExit(f"anthropic provider should use CCR's registerable Anthropic transformer form: {ccr_providers['anthropic']}")
-if providers["codex-gateway"].get("models") != ["claude-reasonix-flash"]:
-    raise SystemExit(f"bad codex-gateway CCR provider: {providers['codex-gateway']}")
+if providers["reasonix-gateway"].get("models") != ["claude-reasonix-flash"]:
+    raise SystemExit(f"bad reasonix-gateway CCR provider: {providers['reasonix-gateway']}")
 if providers["deepseek-gateway"].get("models") != ["claude-reasonix-flash"]:
     raise SystemExit(f"bad deepseek-gateway CCR provider: {providers['deepseek-gateway']}")
 if providers["qwen36-local"].get("models") != ["qwen36-mlx"]:
@@ -939,7 +939,7 @@ if alias.get("route") != "direct" or alias.get("authorization") != "Bearer ccr-t
 tagged = post(
     "claude-opus-4-8",
     "Bearer login-token",
-    [{"type": "text", "text": "<CCR-SUBAGENT-MODEL>codex-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>\nworker"}],
+    [{"type": "text", "text": "<CCR-SUBAGENT-MODEL>reasonix-gateway,claude-reasonix-flash</CCR-SUBAGENT-MODEL>\nworker"}],
 )
 if tagged.get("route") != "ccr" or tagged.get("authorization") != "Bearer ccr-test-key":
     raise SystemExit(f"tagged subagent request should route to CCR even when the model is main Claude: {tagged}")
@@ -990,7 +990,7 @@ LAUNCHER_BIN="$LAUNCHER"
 grep -Eq 'CLAUDE_REASONIX_FLAVOR="?reasonix"?' "$LAUNCHER_BIN" || fail "launcher must set CLAUDE_REASONIX_FLAVOR=reasonix"
 grep -q 'claude-reasonix-flash' "$LAUNCHER_BIN" || fail "launcher reasonix flavor must force claude-reasonix-flash"
 grep -q "REASONIX_BIN" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must export REASONIX_BIN (gateway needs reasonix+node on PATH)"
-grep -q "CLAUDE_REASONIX_CCR_CODEX_ROUTE.*claude-reasonix-flash" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must route worker agents to claude-reasonix-flash, not codex"
+grep -q "CLAUDE_REASONIX_CCR_ROUTE.*claude-reasonix-flash" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must route worker agents to claude-reasonix-flash, not the legacy backend"
 grep -q "CLAUDE_REASONIX_CCR_DEEPSEEK_MODEL.*claude-reasonix-flash" "$LAUNCHER_BIN" || fail "launcher reasonix flavor must point deepseek-* agent model at reasonix-flash (else they die Not-logged-in)"
 
 CLAUDE_REASONIX_FLAVOR=reasonix python3 - "$GATEWAY" <<'PY' || fail "reasonix flavor must expose claude-reasonix-flash"
@@ -1019,7 +1019,8 @@ python3 "$ROOT/tests/test-reasonix-cost-ledger.py" || fail "reasonix cost ledger
 # Hook flavor-awareness: reasonix flavor must NOT block the native Agent tool
 # (so subagents route to reasonix, not the reasonix_fleet MCP); the legacy flavor still blocks Agent.
 echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_REASONIX_FLAVOR=reasonix python3 "$ROOT/hooks/only-reasonix-fleet.py" >/dev/null 2>&1 && fail "reasonix flavor must STILL block Agent (push to reasonix MCP, not native which hangs)"
-echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_REASONIX_FLAVOR=codex CLAUDE_REASONIX_NATIVE_SUBAGENTS=0 python3 "$ROOT/hooks/only-reasonix-fleet.py" >/dev/null 2>&1 && fail "codex flavor must still block the Agent tool"
+# back-compat: a legacy flavor value (non-reasonix) must still block the Agent tool.
+echo '{"tool_name":"Agent","tool_input":{"prompt":"x"}}' | CLAUDE_REASONIX_FLAVOR=codex CLAUDE_REASONIX_NATIVE_SUBAGENTS=0 python3 "$ROOT/hooks/only-reasonix-fleet.py" >/dev/null 2>&1 && fail "a legacy flavor value must still block the Agent tool"
 echo "PASS: only-reasonix-fleet flavor-aware"
 
 # Like the acp test, this drives the real reasonix engine via its own fake driver

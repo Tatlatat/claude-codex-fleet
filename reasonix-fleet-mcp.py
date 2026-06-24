@@ -103,9 +103,9 @@ async def run_one_task(task: dict[str, Any], index: int, batch_id: str, max_outp
     model = task_value(task, "model", "CLAUDE_REASONIX_REASONIX_MODEL", "deepseek-v4-flash")
     config = {"reasonix_bin": os.getenv("REASONIX_BIN", "reasonix"),
               "target_model": model}
-    # run_reasonix_acp reads cwd from CLAUDE_REASONIX_GATEWAY_CODEX_CWD.
-    prev_cwd = os.environ.get("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", os.environ.get("CLAUDE_CODEX_GATEWAY_CODEX_CWD"))
-    os.environ["CLAUDE_REASONIX_GATEWAY_CODEX_CWD"] = cwd_text
+    # run_reasonix_acp reads cwd from CLAUDE_REASONIX_GATEWAY_CWD.
+    prev_cwd = os.environ.get("CLAUDE_REASONIX_GATEWAY_CWD", os.environ.get("CLAUDE_CODEX_GATEWAY_CODEX_CWD"))
+    os.environ["CLAUDE_REASONIX_GATEWAY_CWD"] = cwd_text
     try:
         loop = asyncio.get_running_loop()
         text, usage = await loop.run_in_executor(None, rx, prompt, config)
@@ -115,9 +115,9 @@ async def run_one_task(task: dict[str, Any], index: int, batch_id: str, max_outp
                 "duration_ms": int((time.monotonic() - started) * 1000)}
     finally:
         if prev_cwd is None:
-            os.environ.pop("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", None)
+            os.environ.pop("CLAUDE_REASONIX_GATEWAY_CWD", None)
         else:
-            os.environ["CLAUDE_REASONIX_GATEWAY_CODEX_CWD"] = prev_cwd
+            os.environ["CLAUDE_REASONIX_GATEWAY_CWD"] = prev_cwd
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     Path(stdout_path).write_text(text or "", encoding="utf-8")
     # Record the lane in the per-session cost ledger so `claude-reasonix cost`

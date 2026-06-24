@@ -51,7 +51,7 @@ import tempfile
 # so an empty cwd means no on-disk session to accumulate — this removes the
 # "in_tok grows per lane" confound that came from a cwd holding a prior session.
 _WORKDIR = tempfile.mkdtemp(prefix="primegate-scale-")
-os.environ["CLAUDE_REASONIX_GATEWAY_CODEX_CWD"] = _WORKDIR
+os.environ["CLAUDE_REASONIX_GATEWAY_CWD"] = _WORKDIR
 
 
 def lane(i: int) -> dict:

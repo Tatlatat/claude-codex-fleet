@@ -22,7 +22,9 @@ CCR_CUSTOM_ROUTER_FILE="$CCR_CONFIG_DIR/custom-router.js"
 CCR_AGENTS_FILE="$RUNTIME_DIR/ccr-agents.json"
 
 CLAUDE_BIN="${CLAUDE_BIN:-claude}"
-CODEX_BIN="${CODEX_BIN:-codex}"
+# The reasonix CLI binary the Fleet MCP shells out to. Back-compat: honor a legacy
+# CODEX_BIN if set, but the canonical name is REASONIX_BIN.
+REASONIX_BIN="${REASONIX_BIN:-${CODEX_BIN:-reasonix}}"
 CCR_BIN="${CCR_BIN:-ccr}"
 DEFAULT_WORKERS="${CLAUDE_REASONIX_FLEET_DEFAULT_WORKERS:-${CLAUDE_CODEX_FLEET_DEFAULT_WORKERS:-16}}"
 NATIVE_GATEWAY_PID=""
@@ -41,14 +43,14 @@ CLAUDE_CODEX_FLAVOR="reasonix"
 export CLAUDE_REASONIX_FLAVOR CLAUDE_CODEX_FLAVOR
 
 if [[ "$CLAUDE_REASONIX_FLAVOR" == "reasonix" ]]; then
-  : "${CLAUDE_CODEX_CCR_CODEX_MODEL:=${CLAUDE_REASONIX_CCR_CODEX_MODEL:-claude-reasonix-flash}}"
+  : "${CLAUDE_CODEX_CCR_CODEX_MODEL:=${CLAUDE_REASONIX_CCR_MODEL:-claude-reasonix-flash}}"
   : "${CLAUDE_CODEX_SUBAGENT_MODEL:=${CLAUDE_REASONIX_SUBAGENT_MODEL:-claude-reasonix-flash}}"
   : "${ANTHROPIC_CUSTOM_MODEL_OPTION:=claude-reasonix-flash}"
   # The worker agents (--agents) carry a <CCR-SUBAGENT-MODEL> route tag that decides
   # where each lane actually goes. Both reasonix and deepseek routes point at
   # claude-reasonix-flash (the only gateway-served model in reasonix mode).
-  : "${CLAUDE_CODEX_CCR_CODEX_ROUTE:=${CLAUDE_REASONIX_CCR_CODEX_ROUTE:-codex-gateway,claude-reasonix-flash}}"
-  : "${CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE:=${CLAUDE_REASONIX_CCR_DEEPSEEK_ROUTE:-codex-gateway,claude-reasonix-flash}}"
+  : "${CLAUDE_CODEX_CCR_CODEX_ROUTE:=${CLAUDE_REASONIX_CCR_ROUTE:-reasonix-gateway,claude-reasonix-flash}}"
+  : "${CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE:=${CLAUDE_REASONIX_CCR_DEEPSEEK_ROUTE:-reasonix-gateway,claude-reasonix-flash}}"
   # All deepseek-* agent types also run on reasonix-flash.
   : "${CLAUDE_CODEX_CCR_DEEPSEEK_MODEL:=${CLAUDE_REASONIX_CCR_DEEPSEEK_MODEL:-claude-reasonix-flash}}"
   # UltraCode / Dynamic Workflow defaults to NATIVE mode in reasonix flavor: each
@@ -210,7 +212,7 @@ generate_config() {
   ensure_dirs
   local workers
   workers="$(current_workers)"
-  python3 - "$MCP_FILE" "$workers" "$CODEX_BIN" "$MCP_SERVER_FILE" "$RUNTIME_DIR" <<'PY'
+  python3 - "$MCP_FILE" "$workers" "$REASONIX_BIN" "$MCP_SERVER_FILE" "$RUNTIME_DIR" <<'PY'
 import json
 import os
 import sys
@@ -233,7 +235,7 @@ servers = {
         "command": "/usr/bin/env",
         "args": ["python3", mcp_server],
         "env": {
-            "CODEX_BIN": reasonix_bin,
+            "REASONIX_BIN": reasonix_bin,
             "REASONIX_FLEET_DEFAULT_CONCURRENCY": str(default_concurrency),
             "REASONIX_FLEET_MODEL": model,
             "REASONIX_FLEET_REASONING": reasoning,
@@ -355,11 +357,11 @@ import os
 import sys
 
 path = sys.argv[1]
-reasonix_ccr_model = os.getenv("CLAUDE_REASONIX_CCR_CODEX_MODEL", os.getenv("CLAUDE_CODEX_CCR_CODEX_MODEL", "claude-reasonix-flash"))
+reasonix_ccr_model = os.getenv("CLAUDE_REASONIX_CCR_MODEL", os.getenv("CLAUDE_CODEX_CCR_CODEX_MODEL", "claude-reasonix-flash"))
 deepseek_model = os.getenv("CLAUDE_REASONIX_CCR_DEEPSEEK_MODEL", os.getenv("CLAUDE_CODEX_CCR_DEEPSEEK_MODEL", "claude-reasonix-flash"))
 qwen_model = os.getenv("CLAUDE_REASONIX_CCR_QWEN_MODEL", os.getenv("CLAUDE_CODEX_CCR_QWEN_MODEL", "qwen36-mlx"))
-reasonix_ccr_route = os.getenv("CLAUDE_REASONIX_CCR_CODEX_ROUTE", os.getenv("CLAUDE_CODEX_CCR_CODEX_ROUTE", "codex-gateway,claude-reasonix-flash"))
-deepseek_route = os.getenv("CLAUDE_REASONIX_CCR_DEEPSEEK_ROUTE", os.getenv("CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE", "codex-gateway,claude-reasonix-flash"))
+reasonix_ccr_route = os.getenv("CLAUDE_REASONIX_CCR_ROUTE", os.getenv("CLAUDE_CODEX_CCR_CODEX_ROUTE", "reasonix-gateway,claude-reasonix-flash"))
+deepseek_route = os.getenv("CLAUDE_REASONIX_CCR_DEEPSEEK_ROUTE", os.getenv("CLAUDE_CODEX_CCR_DEEPSEEK_ROUTE", "reasonix-gateway,claude-reasonix-flash"))
 qwen_route = os.getenv("CLAUDE_REASONIX_CCR_QWEN_ROUTE", os.getenv("CLAUDE_CODEX_CCR_QWEN_ROUTE", f"qwen36-local,{qwen_model}"))
 tools = [
     item.strip()
@@ -485,7 +487,7 @@ router_path = Path(sys.argv[2])
 ccr_port = int(sys.argv[3])
 gateway_url = sys.argv[4].rstrip("/")
 
-api_key = os.getenv("CLAUDE_REASONIX_CCR_API_KEY", os.getenv("CLAUDE_CODEX_CCR_API_KEY", "claude-codex-router"))
+api_key = os.getenv("CLAUDE_REASONIX_CCR_API_KEY", os.getenv("CLAUDE_CODEX_CCR_API_KEY", "claude-reasonix-router"))
 main_model = os.getenv("CLAUDE_REASONIX_ROUTER_MAIN_MODEL", os.getenv("CLAUDE_CODEX_ROUTER_MAIN_MODEL", "claude-opus-4-8"))
 qwen_model = os.getenv("CLAUDE_REASONIX_CCR_QWEN_MODEL", os.getenv("CLAUDE_CODEX_CCR_QWEN_MODEL", "qwen36-mlx"))
 qwen_models = [
@@ -522,10 +524,10 @@ providers = [
         "transformer": {"use": ["Anthropic"]},
     },
     {
-        "name": "codex-gateway",
+        "name": "reasonix-gateway",
         "api_base_url": gateway_url + "/v1/chat/completions",
         "api_key": "local-gateway",
-        "models": [os.getenv("CLAUDE_REASONIX_CCR_CODEX_MODEL", os.getenv("CLAUDE_CODEX_CCR_CODEX_MODEL", "claude-reasonix-flash"))],
+        "models": [os.getenv("CLAUDE_REASONIX_CCR_MODEL", os.getenv("CLAUDE_CODEX_CCR_CODEX_MODEL", "claude-reasonix-flash"))],
     },
     {
         "name": "deepseek-gateway",
@@ -567,7 +569,7 @@ config = {
 # local gateway providers serve to the gateway, regardless of its name.
 gateway_routes = {}
 for _prov in providers:
-    if _prov.get("name") in ("codex-gateway", "deepseek-gateway"):
+    if _prov.get("name") in ("reasonix-gateway", "deepseek-gateway"):
         for _m in _prov.get("models", []):
             if _m:
                 gateway_routes[_m] = f"{_prov['name']},{_m}"
@@ -588,7 +590,7 @@ module.exports = async function claudeReasonixRouter(req) {
     return model;
   }
   if (model === "claude-reasonix-flash") {
-    return "codex-gateway,claude-reasonix-flash";
+    return "reasonix-gateway,claude-reasonix-flash";
   }
   if (qwenModels.has(model)) {
     return "qwen36-local," + model;
@@ -622,7 +624,7 @@ start_native_gateway() {
   local port_file="$RUNTIME_DIR/gateway.$$.port"
   local log_file="$RUNTIME_DIR/gateway.log"
   local upstream_base="${CLAUDE_REASONIX_GATEWAY_ANTHROPIC_BASE_URL:-${CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL:-${ANTHROPIC_BASE_URL:-https://api.anthropic.com}}}"
-  local gateway_concurrency="${CLAUDE_REASONIX_GATEWAY_CODEX_CONCURRENCY:-${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}}"
+  local gateway_concurrency="${CLAUDE_REASONIX_GATEWAY_CONCURRENCY:-${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}}"
   rm -f "$port_file"
 
   CLAUDE_CODEX_GATEWAY_ANTHROPIC_BASE_URL="$upstream_base" \
@@ -750,7 +752,7 @@ with open(sys.argv[1], "r", encoding="utf-8") as fh:
     config = json.load(fh)
 aliases = []
 for provider in config.get("Providers", []):
-    if provider.get("name") in {"codex-gateway", "deepseek-gateway", "qwen36-local"}:
+    if provider.get("name") in {"reasonix-gateway", "deepseek-gateway", "qwen36-local"}:
         aliases.extend(provider.get("models", []))
 print(",".join(dict.fromkeys(aliases)))
 PY
@@ -779,7 +781,7 @@ ensure_qwen36_ready() {
 start_ccr_proxy() {
   local proxy_port="$1"
   local ccr_port="$2"
-  local ccr_api_key="${3-claude-codex-router}"
+  local ccr_api_key="${3-claude-reasonix-router}"
   local passthrough_main="${4:-0}"
   local port_file="$RUNTIME_DIR/ccr-proxy.$$.port"
   local log_file="$RUNTIME_DIR/ccr-proxy.log"
@@ -972,7 +974,7 @@ run_claude_with_router() {
   proxy_port="${CLAUDE_REASONIX_CCR_PROXY_PORT:-${CLAUDE_CODEX_CCR_PROXY_PORT:-$(find_free_port)}}"
   local agent_defs
   agent_defs="$(ccr_agents_json)"
-  local ccr_api_key="${CLAUDE_REASONIX_CCR_API_KEY:-${CLAUDE_CODEX_CCR_API_KEY-claude-codex-router}}"
+  local ccr_api_key="${CLAUDE_REASONIX_CCR_API_KEY:-${CLAUDE_CODEX_CCR_API_KEY-claude-reasonix-router}}"
   local passthrough_main=0
   if [[ "$router_auth_mode" == "login" ]]; then
     ccr_api_key="${CLAUDE_REASONIX_CCR_API_KEY:-${CLAUDE_CODEX_CCR_API_KEY-}}"
@@ -1073,7 +1075,7 @@ process_list() {
 }
 
 report_active_sessions() {
-  python3 - "$MCP_FILE" "${CLAUDE_REASONIX_CODEX_MODEL:-${CLAUDE_CODEX_CODEX_MODEL:-${REASONIX_FLEET_MODEL:-gpt-5.4}}}" "$(current_workers)" "${CLAUDE_REASONIX_PS_FIXTURE:-${CLAUDE_CODEX_PS_FIXTURE:-}}" <<'PY'
+  python3 - "$MCP_FILE" "${CLAUDE_REASONIX_MODEL:-${CLAUDE_CODEX_CODEX_MODEL:-${REASONIX_FLEET_MODEL:-gpt-5.4}}}" "$(current_workers)" "${CLAUDE_REASONIX_PS_FIXTURE:-${CLAUDE_CODEX_PS_FIXTURE:-}}" <<'PY'
 import re
 import subprocess
 import sys
@@ -1158,7 +1160,7 @@ status() {
   echo "reasonix fleet: disabled"
   fi
   echo "default concurrency: $(current_workers)"
-  echo "gateway concurrency: ${CLAUDE_REASONIX_GATEWAY_CODEX_CONCURRENCY:-${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}}"
+  echo "gateway concurrency: ${CLAUDE_REASONIX_GATEWAY_CONCURRENCY:-${CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY:-$(current_workers)}}"
   echo "fleet home: $FLEET_HOME"
   echo "install home: $INSTALL_HOME"
   report_active_sessions

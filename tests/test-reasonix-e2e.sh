@@ -37,7 +37,7 @@ trap cleanup EXIT
 
 # --- Step 2: set env for gateway ----------------------------------------------
 # Gateway needs a writable cwd for reasonix to create files.
-export CLAUDE_REASONIX_GATEWAY_CODEX_CWD="$TMPDIR_E2E"
+export CLAUDE_REASONIX_GATEWAY_CWD="$TMPDIR_E2E"
 # Expose reasonix flavor so gateway serves claude-reasonix-flash in its registry.
 export CLAUDE_REASONIX_FLAVOR=reasonix
 

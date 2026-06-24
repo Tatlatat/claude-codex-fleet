@@ -29,7 +29,7 @@ TRUE_VALUES = {"1", "true", "yes", "on"}
 def forward_timeout() -> float:
     """Upstream-request timeout for forward().
 
-    Kept just above the gateway's reasonix-exec budget (CLAUDE_REASONIX_GATEWAY_CODEX_TIMEOUT,
+    Kept just above the gateway's reasonix-exec budget (CLAUDE_REASONIX_GATEWAY_TIMEOUT,
     default 600s) so the gateway returns a clean 504 before this outer proxy cuts the
     socket. The old hard-coded 3600s let a wedged upstream hang a subagent for an hour.
     """

@@ -67,7 +67,7 @@ def gateway_trace(event: str, **fields: Any) -> None:
 
 def reasonix_cli_semaphore() -> threading.BoundedSemaphore:
     global _REASONIX_CLI_SEMAPHORE
-    limit = max(1, env_int("CLAUDE_REASONIX_GATEWAY_CODEX_CONCURRENCY", "CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY", default=16))
+    limit = max(1, env_int("CLAUDE_REASONIX_GATEWAY_CONCURRENCY", "CLAUDE_CODEX_GATEWAY_CODEX_CONCURRENCY", default=16))
     with _REASONIX_CLI_SEMAPHORE_LOCK:
         if _REASONIX_CLI_SEMAPHORE is None or _REASONIX_CLI_SEMAPHORE[0] != limit:
             _REASONIX_CLI_SEMAPHORE = (limit, threading.BoundedSemaphore(limit))
@@ -584,7 +584,7 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         )
         append_reasonix_cost(
             ledger, usage,
-            cwd=env_first("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", "CLAUDE_REASONIX_GATEWAY_CODEX_CWD", default=os.getcwd()),
+            cwd=env_first("CLAUDE_REASONIX_GATEWAY_CWD", "CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd()),
             model=str(config.get("target_model") or ""),
             claude_equiv=usage.get("reasonix_claude_equiv_usd"),
         )
@@ -1289,9 +1289,9 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
     model = str(config.get("target_model") or "deepseek-v4-flash")
     effort = env_first("CLAUDE_REASONIX_REASONIX_EFFORT", "CLAUDE_CODEX_REASONIX_EFFORT", default="high")
     budget = env_first("CLAUDE_REASONIX_REASONIX_BUDGET", "CLAUDE_CODEX_REASONIX_BUDGET", default="0.05")
-    timeout = float(env_first("CLAUDE_REASONIX_GATEWAY_CODEX_TIMEOUT", "CLAUDE_CODEX_GATEWAY_CODEX_TIMEOUT", "REASONIX_FLEET_TIMEOUT_SECONDS", default="600"))
-    cwd = env_first("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", "CLAUDE_REASONIX_GATEWAY_CODEX_CWD", default=os.getcwd())
-    max_attempts = max(1, env_int("CLAUDE_REASONIX_GATEWAY_CODEX_MAX_ATTEMPTS", "CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS", default=3))
+    timeout = float(env_first("CLAUDE_REASONIX_GATEWAY_TIMEOUT", "CLAUDE_CODEX_GATEWAY_CODEX_TIMEOUT", "REASONIX_FLEET_TIMEOUT_SECONDS", default="600"))
+    cwd = env_first("CLAUDE_REASONIX_GATEWAY_CWD", "CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd())
+    max_attempts = max(1, env_int("CLAUDE_REASONIX_GATEWAY_MAX_ATTEMPTS", "CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS", default=3))
     semaphore = reasonix_cli_semaphore()
 
     def _attempt() -> tuple[str, JSON]:
@@ -1698,7 +1698,7 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         )
         append_reasonix_cost(
             ledger, usage,
-            cwd=env_first("CLAUDE_REASONIX_GATEWAY_CODEX_CWD", "CLAUDE_REASONIX_GATEWAY_CODEX_CWD", default=os.getcwd()),
+            cwd=env_first("CLAUDE_REASONIX_GATEWAY_CWD", "CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd()),
             model=str(config.get("target_model") or ""),
             claude_equiv=usage.get("reasonix_claude_equiv_usd"),
         )
