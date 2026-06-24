@@ -1,4 +1,5 @@
 from __future__ import annotations
+import re
 import subprocess
 from pathlib import Path
 
@@ -35,8 +36,11 @@ def test_no_codex_in_filenames():
 
 
 def test_no_codex_identifiers_outside_fallback():
-    # Allow `CLAUDE_CODEX_` ONLY as a backward-compat fallback (a later env_first arg
-    # or a getenv fallback). Flag any other codex / CLAUDE_CODEX_ token.
+    # A `codex` token survives ONLY as a backward-compat env fallback: a CLAUDE_CODEX_
+    # name that is paired with a CLAUDE_REASONIX_ name on the SAME line (the second
+    # arm of a reasonix-first env read — env_first(...), nested getenv, or a bash
+    # ${REASONIX:-${CODEX:-default}}). Any other codex token — lone CLAUDE_CODEX_,
+    # a codex identifier, MCP name, or string — is a real leftover and is flagged.
     offenders = []
     for p in shipped_files():
         try:
@@ -47,10 +51,17 @@ def test_no_codex_identifiers_outside_fallback():
             low = line.lower()
             if "codex" not in low:
                 continue
-            if "claude_codex_" in low and ("env_first(" in low or "fallback" in low or "getenv" in low):
+            # back-compat env pairing: every codex token on the line is a CLAUDE_CODEX_
+            # name AND a CLAUDE_REASONIX_ name is present (the preferred arm).
+            only_env_codex = all(
+                m.startswith("claude_codex_")
+                for m in re.findall(r"claude_codex_[a-z0-9_]*|codex", low)
+            )
+            if only_env_codex and "claude_reasonix_" in low:
                 continue
             offenders.append(f"{p}:{i}: {line.strip()[:80]}")
-    assert not offenders, "codex references remain:\n" + "\n".join(offenders)
+    assert not offenders, (
+        f"{len(offenders)} codex references remain:\n" + "\n".join(offenders))
 
 
 if __name__ == "__main__":
