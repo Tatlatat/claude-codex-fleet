@@ -48896,7 +48896,7 @@ function readPackageVersion() {
       const p = join17(dir, "package.json");
       if (existsSync13(p)) {
         const pkg = JSON.parse(readFileSync15(p, "utf8"));
-        if (pkg?.name === "reasonix" && typeof pkg.version === "string") {
+        if ((pkg?.name === "reasonix" || pkg?.name === "deepseek-reasonix-engine") && typeof pkg.version === "string") {
           return pkg.version;
         }
       }
@@ -51846,8 +51846,84 @@ async function buildCodeToolset(opts) {
       return formatSubagentResult(result);
     }
   });
+  if (readIsolatedEnabled()) {
+    const readFileDef = tools.get("read_file");
+    if (readFileDef && !readFileDef.description?.includes("read_file_isolated")) {
+      tools.register({
+        ...readFileDef,
+        description: `${readFileDef.description ?? ""} For large files, prefer read_file_isolated \u2014 it reads in a separate context and returns only a short summary, keeping your context clean.`
+      });
+    }
+    const ensureSubagentClient = () => {
+      if (!subagentClient) {
+        const ep = loadEndpoint();
+        subagentClient = new DeepSeekClient({ apiKey: ep.apiKey, baseUrl: ep.baseUrl });
+      }
+      return subagentClient;
+    };
+    tools.register({
+      name: "read_file_isolated",
+      parallelSafe: true,
+      readOnly: true,
+      description: "Read a (typically large) file WITHOUT loading its raw contents into your context. Spawns a read-only child agent in a separate context that reads the file and returns only a concise \u22642K summary of what's relevant. Use this instead of read_file when you only need to UNDERSTAND a big file (its structure, where something is, whether it does X) rather than edit it \u2014 you keep your context clean and pay one cheap child loop instead of ingesting the whole file. For files you intend to edit, use read_file (the edit gate requires a direct read).",
+      parameters: {
+        type: "object",
+        properties: {
+          path: {
+            type: "string",
+            description: "Path to read (relative to rootDir or absolute)."
+          },
+          focus: {
+            type: "string",
+            description: "Optional: what to look for in the file (e.g. 'the auth flow', 'where TIMEOUT is set'). Sharpens the summary; omit for a general overview."
+          }
+        },
+        required: ["path"]
+      },
+      fn: async (args, ctx) => {
+        const path6 = typeof args.path === "string" ? args.path.trim() : "";
+        if (!path6) {
+          return JSON.stringify({ error: "read_file_isolated requires a non-empty 'path'." });
+        }
+        const focus = typeof args.focus === "string" && args.focus.trim().length > 0 ? args.focus.trim() : void 0;
+        const tracePath = (process.env.REASONIX_READ_ISOLATED_TRACE ?? "").trim();
+        if (tracePath) {
+          try {
+            const { appendFileSync: appendFileSync3 } = await import("fs");
+            appendFileSync3(tracePath, `${JSON.stringify({ ts: Date.now(), path: path6 })}
+`);
+          } catch {
+          }
+        }
+        const task = focus ? `Read the file at path "${path6}" using read_file (chunk with range/head/tail if large) and return a \u22642000-character summary focused on: ${focus}. Lead with the conclusion; cite file:line ranges. Do NOT paste the raw file back.` : `Read the file at path "${path6}" using read_file (chunk with range/head/tail if large) and return a \u22642000-character summary of its purpose, structure, and key contents. Lead with the conclusion; cite file:line ranges. Do NOT paste the raw file back.`;
+        const result = await spawnSubagent({
+          client: ensureSubagentClient(),
+          parentRegistry: tools,
+          system: EXPLORE_SYSTEM,
+          task,
+          // Read-only child: only the tools it needs to read + locate.
+          allowedTools: [
+            "read_file",
+            "search_content",
+            "search_files",
+            "list_directory",
+            "get_file_info"
+          ],
+          // Hard-cap the surfaced result so the parent never ingests bulk.
+          maxResultChars: 2e3,
+          parentSignal: ctx?.signal,
+          sink: opts.subagentSink ?? SHARED_SUBAGENT_SINK
+        });
+        return formatSubagentResult(result);
+      }
+    });
+  }
   const semantic = await reBootstrapSemantic(opts.rootDir);
   return { tools, jobs, registerRooted, reBootstrapSemantic, semantic };
+}
+function readIsolatedEnabled() {
+  const v = (process.env.REASONIX_READ_ISOLATED ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
 }
 
 // src/telemetry/usage.ts

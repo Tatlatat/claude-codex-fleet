@@ -204,6 +204,13 @@ _LEVER_ENV_MAP: dict[str, str] = {
     # a file summarized by one lane is reused by later lanes referencing it. NOT in
     # DEFAULT_ON until Scenario C2 measures it positive (run-2 cache >= run-1 + 5pts).
     "READ_SUMMARY_CACHE": "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE",
+    # Lever B — sub-agent read-in-isolation. This flag is read by the VENDORED
+    # ENGINE (buildCodeToolset in run-lane.mjs), not the gateway proper: the
+    # gateway copies its full env into the lane shim (shim_env = dict(os.environ)),
+    # so injecting REASONIX_READ_ISOLATED here reaches buildCodeToolset and
+    # registers read_file_isolated. NOT in DEFAULT_ON until adoption is proven
+    # (the model must actually CALL the tool).
+    "READ_ISOLATED": "REASONIX_READ_ISOLATED",
 }
 
 
