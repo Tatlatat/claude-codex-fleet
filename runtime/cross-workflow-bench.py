@@ -37,7 +37,8 @@ def find_reasonix() -> str:
 def start_gateway(keepalive: bool):
     rx = find_reasonix()
     env = dict(os.environ)
-    env["REASONIX_ACP_EPHEMERAL_SESSION"] = "1"
+    # (engine is in-process via the shim; session:undefined => ephemeral by design;
+    # REASONIX_ACP_EPHEMERAL_SESSION is a no-op here, kept only for the fork CLI path)
     env["REASONIX_BIN"] = rx
     env["CLAUDE_CODEX_GATEWAY_KEEPALIVE"] = "1" if keepalive else "0"
     env["CLAUDE_CODEX_GATEWAY_KEEPALIVE_INTERVAL_SECONDS"] = "30"

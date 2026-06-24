@@ -52,7 +52,8 @@ def start_gateway() -> tuple[subprocess.Popen, int]:
     if portfile.exists():
         portfile.unlink()
     env = dict(os.environ)
-    env.setdefault("REASONIX_ACP_EPHEMERAL_SESSION", "1")  # the session-isolation fix
+    # (engine is in-process via the shim; session:undefined => ephemeral by design;
+    # REASONIX_ACP_EPHEMERAL_SESSION is a no-op here, kept only for the fork CLI path)
     env["CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL"] = "1"
     rx = find_reasonix()
     env["REASONIX_BIN"] = rx
