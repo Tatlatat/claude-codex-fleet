@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+// One-shot lane producer for the claude-reasonix fleet.
+//
+// Reads ONE JSON request on stdin:
+//   {prompt, system, rootDir, model, maxIterPerTurn}
+// runs ONE DeepSeek lane through the owner's fork engine (imported as a library
+// from REASONIX_ENGINE_DIST), and writes ONE JSON line on stdout:
+//   {text, usage:{prompt_tokens, completion_tokens,
+//                 prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+//                 cache_hit_ratio}, cost_usd}
+//
+// This is a stateless, per-lane subprocess (NOT a persistent engine): it is
+// behaviourally identical to the old `reasonix acp` spawn the gateway used, so
+// the gateway's streaming/heartbeat/prime-gate machinery is untouched — this
+// shim is only the lane PRODUCER. DeepSeek's cache hits come from the
+// server-side prefix cache (same prefix bytes), kept warm by the gateway, not
+// from any in-memory state here.
+//
+// stream:true is load-bearing (the gateway's 180s watchdog needs the engine to
+// keep producing). session:undefined => ephemeral, zero disk I/O, no lane
+// history bleed.
+import fs from "node:fs";
+
+function readStdin() {
+  return fs.readFileSync(0, "utf8");
+}
+
+function fail(msg, code) {
+  process.stderr.write(String(msg) + "\n");
+  process.exit(code ?? 1);
+}
+
+let req;
+try {
+  req = JSON.parse(readStdin());
+} catch (e) {
+  fail(`run-lane: invalid JSON request on stdin: ${e.message}`, 2);
+}
+
+function envNum(name, fallback) {
+  const v = process.env[name];
+  if (v === undefined || v === "") return fallback;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+// MOCK path: deterministic reply with NO DeepSeek call (tests/CI). Values are
+// overridable via env so the gateway-side tests can assert real-ish numbers
+// without spawning the real engine.
+if (process.env.REASONIX_ENGINE_MOCK === "1") {
+  const text =
+    process.env.REASONIX_ENGINE_MOCK_TEXT ??
+    `mock reasonix lane for ${String(req.prompt ?? "").slice(0, 40)}`;
+  const prompt_tokens = envNum("REASONIX_ENGINE_MOCK_PROMPT_TOKENS", 1);
+  const completion_tokens = envNum("REASONIX_ENGINE_MOCK_COMPLETION_TOKENS", 1);
+  const hit = envNum("REASONIX_ENGINE_MOCK_CACHE_HIT_TOKENS", 0);
+  const miss = envNum("REASONIX_ENGINE_MOCK_CACHE_MISS_TOKENS", 1);
+  const denom = hit + miss;
+  const cache_hit_ratio = denom > 0 ? hit / denom : 0;
+  const cost_usd = envNum("REASONIX_ENGINE_MOCK_COST", 0);
+  process.stdout.write(
+    JSON.stringify({
+      text,
+      usage: {
+        prompt_tokens,
+        completion_tokens,
+        prompt_cache_hit_tokens: hit,
+        prompt_cache_miss_tokens: miss,
+        cache_hit_ratio,
+      },
+      cost_usd,
+    }) + "\n",
+  );
+  process.exit(0);
+}
+
+const dist =
+  process.env.REASONIX_ENGINE_DIST ||
+  new URL("../vendor/reasonix-engine/dist/index.js", import.meta.url).href;
+
+let lib;
+try {
+  lib = await import(dist);
+} catch (e) {
+  fail(`run-lane: cannot load engine dist (${dist}): ${e.message}`, 4);
+}
+
+const { DeepSeekClient, ImmutablePrefix, CacheFirstLoop, buildCodeToolset } = lib;
+for (const [name, ref] of Object.entries({
+  DeepSeekClient,
+  ImmutablePrefix,
+  CacheFirstLoop,
+  buildCodeToolset,
+})) {
+  if (typeof ref !== "function") {
+    fail(`run-lane: engine dist missing export ${name} (got ${typeof ref})`, 4);
+  }
+}
+
+const rootDir = req.rootDir || process.cwd();
+
+let text = "";
+let stats = null;
+try {
+  // Full code toolset (file/shell/semantic-search) so lanes match the old acp.
+  const toolset = await buildCodeToolset({ rootDir });
+  const client = new DeepSeekClient({
+    apiKey: process.env.DEEPSEEK_API_KEY,
+    baseUrl: process.env.DEEPSEEK_BASE_URL,
+  });
+  const prefix = new ImmutablePrefix({
+    system: String(req.system ?? ""),
+    toolSpecs: toolset.tools.specs(),
+  });
+  const loop = new CacheFirstLoop({
+    client,
+    prefix,
+    tools: toolset.tools,
+    model: req.model,
+    stream: true, // load-bearing: gateway watchdog needs a live producer
+    session: undefined, // ephemeral, zero disk, no lane history bleed
+    maxIterPerTurn: req.maxIterPerTurn ?? 1,
+  });
+
+  for await (const ev of loop.step(String(req.prompt ?? ""))) {
+    if (ev.role === "assistant_final") {
+      text = ev.content ?? "";
+      if (ev.stats) stats = ev.stats;
+    } else if (ev.role === "error") {
+      fail(`run-lane: engine error: ${ev.content || "unknown"}`, 3);
+    } else if (ev.role === "done") {
+      break;
+    }
+  }
+} catch (e) {
+  fail(`run-lane: lane execution failed: ${e?.stack || e?.message || e}`, 3);
+}
+
+// Map the fork's TurnStats.usage (a Usage instance) to the shim's flat JSON
+// shape. The gateway (Task 4) re-maps THIS to its internal usage dict.
+const u = stats?.usage ?? {};
+process.stdout.write(
+  JSON.stringify({
+    text,
+    usage: {
+      prompt_tokens: u.promptTokens ?? 0,
+      completion_tokens: u.completionTokens ?? 0,
+      prompt_cache_hit_tokens: u.promptCacheHitTokens ?? 0,
+      prompt_cache_miss_tokens: u.promptCacheMissTokens ?? 0,
+      cache_hit_ratio: u.cacheHitRatio ?? 0,
+    },
+    cost_usd: stats?.cost ?? 0,
+  }) + "\n",
+);
