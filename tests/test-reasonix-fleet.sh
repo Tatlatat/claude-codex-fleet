@@ -34,7 +34,7 @@ for banned in "ccr-claude-proxy" "run_claude_with_router" "start_ccr_proxy" "gen
   grep -q "$banned" "$LAUNCHER" && fail "launcher still references removed CCR symbol: $banned"
 done
 # Slim-down Task 2: the launcher must carry NO Qwen machinery.
-for banned in "ensure_qwen36_ready" "qwen-worker" "qwen36-local" "router-qwen"; do
+for banned in "ensure_qwen36_ready" "qwen-worker" "qwen-research" "qwen36-local" "router-qwen"; do
   grep -q "$banned" "$LAUNCHER" && fail "launcher still references removed qwen symbol: $banned"
 done
 [[ -f "$ROOT/ccr-claude-proxy.py" ]] && fail "ccr-claude-proxy.py should be deleted"
