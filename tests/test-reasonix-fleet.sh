@@ -45,6 +45,21 @@ for f in service_tier web_search sandbox approval_policy; do
   grep -q "\"$f\"" "$MCP_SERVER" && fail "MCP still carries codex-exec field: $f"
 done
 
+# Fork-engine cutover: the dist patch + upstream-reasonix requirement are retired.
+# The launcher must NOT run the retired ephemeral dist patch, and install.sh must
+# NOT require/install upstream reasonix. The engine is bundled in vendor/.
+grep -q "apply_ephemeral" "$LAUNCHER" && fail "launcher must not run the retired dist patch (apply_ephemeral)"
+grep -q "REASONIX_ACP_EPHEMERAL_SESSION" "$LAUNCHER" && fail "launcher must not export the retired REASONIX_ACP_EPHEMERAL_SESSION"
+[[ -e "$ROOT/patches/apply_ephemeral.py" ]] && fail "patches/apply_ephemeral.py should be deleted"
+[[ -e "$ROOT/patches/ephemeral-session.md" ]] && fail "patches/ephemeral-session.md should be deleted"
+grep -Eq "npm i -g reasonix|npm install -g reasonix" "$ROOT/install.sh" && fail "install must not require upstream reasonix (npm i -g reasonix)"
+grep -q "apply_ephemeral" "$ROOT/install.sh" && fail "install must not run the retired dist patch"
+grep -q "reasonix CLI not found" "$ROOT/install.sh" && fail "install must not require the upstream reasonix CLI"
+# The bundled fork engine must be present and committed (it is the shipped engine).
+[[ -f "$ROOT/vendor/reasonix-engine/dist/index.js" ]] || fail "missing bundled fork engine: vendor/reasonix-engine/dist/index.js"
+[[ -f "$ROOT/engine/run-lane.mjs" ]] || fail "missing engine shim: engine/run-lane.mjs"
+grep -q "REASONIX_ENGINE_DIST" "$LAUNCHER" || fail "launcher must export REASONIX_ENGINE_DIST for the in-process engine"
+
 RX_PROMPT="$ROOT/system-prompt-reasonix.md"
 [[ -f "$RX_PROMPT" ]] || fail "missing reasonix system prompt"
 grep -q "claude-reasonix-flash" "$RX_PROMPT" || fail "reasonix prompt must name the flash agent"

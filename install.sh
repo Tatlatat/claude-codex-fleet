@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
-# claude-reasonix installer — copies the fleet into ~/.claude/reasonix-fleet, puts the
-# launcher on PATH, and applies the reasonix ACP ephemeral-session patch.
+# claude-reasonix installer — copies the fleet (incl. the bundled fork engine) into
+# ~/.claude/reasonix-fleet and puts the launcher on PATH.
+#
+# The DeepSeek engine is the owner's fork (built using ideas from reasonix), shipped
+# as a self-contained bundle under vendor/reasonix-engine and called IN-PROCESS via
+# a one-shot Node shim. There is NO upstream-reasonix install: end users need only
+# node + a DeepSeek credential.
 #
 # Philosophy: CHECK and INSTRUCT. We never silently auto-install someone else's tools
-# (reasonix, claude, node) — instead we verify each dependency and, if something is
-# missing, print exactly what to do and stop. Everything we DO own (file copy, launcher
-# symlink, dist patch) is idempotent: re-running install.sh is always safe.
+# (claude, node) — instead we verify each dependency and, if something is missing,
+# print exactly what to do and stop. Everything we DO own (file copy, launcher
+# install, vendoring the engine) is idempotent: re-running install.sh is always safe.
 #
 # Usage:  ./install.sh            # install / re-install
-#         REASONIX_BIN=/path ./install.sh   # if reasonix is not on PATH
 set -euo pipefail
 
 # Resolve the repo root (this script's dir), independent of the caller's cwd.
@@ -33,26 +37,27 @@ command -v claude >/dev/null 2>&1 \
   || die "Claude Code CLI ('claude') not found. Install it (https://claude.com/claude-code) and re-run."
 ok "claude — $(command -v claude)"
 
-# reasonix: prefer $REASONIX_BIN, else PATH. It is the DeepSeek engine the fleet drives.
-REASONIX_BIN="${REASONIX_BIN:-$(command -v reasonix 2>/dev/null || true)}"
-[ -n "$REASONIX_BIN" ] && [ -x "$REASONIX_BIN" ] \
-  || die "reasonix CLI not found. Install it (npm i -g reasonix), or pass REASONIX_BIN=/path/to/reasonix, then re-run."
-ok "reasonix — $REASONIX_BIN"
-
-# node: reasonix needs node alongside it (the gateway spawns reasonix and needs node on PATH).
+# node: the bundled fork engine is driven in-process via the Node shim
+# engine/run-lane.mjs, so node is REQUIRED (no upstream reasonix).
 NODE_BIN="$(command -v node 2>/dev/null || true)"
-if [ -z "$NODE_BIN" ]; then
-  cand="$(dirname "$REASONIX_BIN")/node"
-  [ -x "$cand" ] && NODE_BIN="$cand"
-fi
 [ -n "$NODE_BIN" ] \
-  || warn "node not found on PATH. reasonix usually ships beside node; if lanes fail with 'node not found', add it to PATH."
-[ -n "$NODE_BIN" ] && ok "node — $NODE_BIN"
+  || die "node not found. The engine runs on Node — install Node 18+ (https://nodejs.org) and re-run."
+ok "node — $NODE_BIN"
+
+# DeepSeek auth: the engine authenticates with DEEPSEEK_API_KEY, or falls back to
+# ~/.reasonix/config.json (the DeepSeek login). One of them must be present.
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+  ok "DeepSeek auth — DEEPSEEK_API_KEY (env)"
+elif [ -f "$HOME/.reasonix/config.json" ]; then
+  ok "DeepSeek auth — ~/.reasonix/config.json"
+else
+  die "No DeepSeek credential. Set DEEPSEEK_API_KEY, or log in so ~/.reasonix/config.json exists, then re-run."
+fi
 
 # ----------------------------------------------------------------------------
-say "2/6  Installing the fleet into $INSTALL_HOME"
+say "2/5  Installing the fleet into $INSTALL_HOME"
 # ----------------------------------------------------------------------------
-mkdir -p "$INSTALL_HOME/hooks" "$INSTALL_HOME/runtime/logs" "$INSTALL_HOME/state"
+mkdir -p "$INSTALL_HOME/hooks" "$INSTALL_HOME/runtime/logs" "$INSTALL_HOME/state" "$INSTALL_HOME/engine"
 # Copy the shipped components (NOT scratch: runtime ledgers/ports, .git, .superpowers).
 for item in \
   reasonix-native-gateway.py reasonix-fleet-mcp.py \
@@ -60,13 +65,23 @@ for item in \
   cp -f "$SRC/$item" "$INSTALL_HOME/$item"
 done
 cp -f "$SRC/hooks/"*.py "$INSTALL_HOME/hooks/"
+# The one-shot Node shim that drives the in-process engine.
+cp -f "$SRC/engine/run-lane.mjs" "$INSTALL_HOME/engine/run-lane.mjs"
+# The bundled fork engine (self-contained dist + tree-sitter grammars + tokenizer
+# data). This IS the DeepSeek engine — copy it verbatim; no build, no npm install.
+rm -rf "$INSTALL_HOME/vendor/reasonix-engine"
+mkdir -p "$INSTALL_HOME/vendor"
+cp -R "$SRC/vendor/reasonix-engine" "$INSTALL_HOME/vendor/reasonix-engine"
+[ -f "$INSTALL_HOME/vendor/reasonix-engine/dist/index.js" ] \
+  || die "bundled engine missing after copy: $INSTALL_HOME/vendor/reasonix-engine/dist/index.js"
+REASONIX_ENGINE_DIST="$INSTALL_HOME/vendor/reasonix-engine/dist/index.js"
 # Benches/diagnostics are handy but optional; copy the runtime tooling, not the ledgers.
 cp -f "$SRC/runtime/realworld-bench.py" "$INSTALL_HOME/runtime/" 2>/dev/null || true
 cp -f "$SRC/runtime/cross-workflow-bench.py" "$INSTALL_HOME/runtime/" 2>/dev/null || true
-ok "fleet files copied"
+ok "fleet files + bundled engine copied"
 
 # ----------------------------------------------------------------------------
-say "3/6  Installing the launcher into $BIN_DIR/$LAUNCHER_NAME"
+say "3/5  Installing the launcher into $BIN_DIR/$LAUNCHER_NAME"
 # ----------------------------------------------------------------------------
 mkdir -p "$BIN_DIR"
 cp -f "$SRC/bin/claude-reasonix" "$BIN_DIR/$LAUNCHER_NAME"
@@ -80,21 +95,11 @@ case ":$PATH:" in
 esac
 
 # ----------------------------------------------------------------------------
-say "4/6  Applying the reasonix ACP ephemeral-session patch"
+say "4/5  Smoke-checking the install"
 # ----------------------------------------------------------------------------
-# This is the one dependency we modify in place; it reverts on a reasonix upgrade, so
-# re-run install.sh (or patches/apply_ephemeral.py) after upgrading reasonix.
-if REASONIX_BIN="$REASONIX_BIN" python3 "$SRC/patches/apply_ephemeral.py"; then
-  ok "ephemeral-session patch applied (or already present)"
-else
-  warn "ephemeral-session patch did not apply cleanly. Fan-out cache will be lower; see patches/ephemeral-session.md. Continuing."
-fi
-
-# ----------------------------------------------------------------------------
-say "5/6  Smoke-checking the install"
-# ----------------------------------------------------------------------------
-# The launcher's own doctor validates the wired-up install (files present, settings valid).
-if CLAUDE_REASONIX_FLEET_INSTALL_HOME="$INSTALL_HOME" REASONIX_BIN="$REASONIX_BIN" \
+# The launcher's own doctor validates the wired-up install (files present, settings
+# valid, node + bundled engine + shim present, DeepSeek auth resolvable).
+if CLAUDE_REASONIX_FLEET_INSTALL_HOME="$INSTALL_HOME" REASONIX_ENGINE_DIST="$REASONIX_ENGINE_DIST" \
    "$BIN_DIR/$LAUNCHER_NAME" doctor >/tmp/claude-reasonix-doctor.$$ 2>&1; then
   ok "launcher doctor passed"
 else
@@ -104,12 +109,12 @@ fi
 rm -f "/tmp/claude-reasonix-doctor.$$" 2>/dev/null || true
 
 # ----------------------------------------------------------------------------
-say "6/6  Done"
+say "5/5  Done"
 # ----------------------------------------------------------------------------
 ok "Installed. Start a reasonix session with:"
 printf '      %s "your prompt"        # or just: %s\n' "$LAUNCHER_NAME" "$LAUNCHER_NAME"
 printf '      %s on                   # enable fleet mode, then run claude normally\n' "$LAUNCHER_NAME"
 echo
 echo "  Reinstall/upgrade: re-run ./install.sh (safe, idempotent)."
-echo "  After upgrading reasonix: re-run ./install.sh to re-apply the ACP patch."
+echo "  The DeepSeek engine is bundled — no upstream reasonix to install or patch."
 echo "  Uninstall: ./uninstall.sh"

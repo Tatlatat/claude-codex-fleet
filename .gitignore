@@ -9,3 +9,9 @@ config.yml
 *.port
 docs/specs/*.tmp
 .superpowers/
+
+# The bundled fork engine is the SHIPPED engine — always track it, even though the
+# broad data/ rule above (meant for runtime scratch) would otherwise catch its
+# vendored tokenizer data dir.
+!vendor/
+!vendor/**

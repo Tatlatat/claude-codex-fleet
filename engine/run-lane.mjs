@@ -20,6 +20,20 @@
 // keep producing). session:undefined => ephemeral, zero disk I/O, no lane
 // history bleed.
 import fs from "node:fs";
+import { createRequire } from "node:module";
+
+// The vendored fork engine is a tsup `noExternal` bundle that interops with a few
+// CJS-only transitive deps (safer-buffer/iconv-lite → `require("buffer")`) via an
+// esbuild `__require` shim. That shim resolves to the host `require` when one is
+// in scope, else throws "Dynamic require of X is not supported". A `.mjs` ESM host
+// has NO ambient `require`, so loading the bundle here would throw at eval time.
+// Provide the canonical ESM-loads-a-CJS-bundle bridge: a real `require` on the
+// global scope (the bundle reads `typeof require`, which falls through to
+// globalThis), pinned to THIS module's URL so node-builtin resolution works.
+// This must run BEFORE `await import(dist)` below; module-level statements suffice.
+if (typeof globalThis.require !== "function") {
+  globalThis.require = createRequire(import.meta.url);
+}
 
 function readStdin() {
   return fs.readFileSync(0, "utf8");

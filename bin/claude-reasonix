@@ -43,32 +43,36 @@ if [[ "$CLAUDE_REASONIX_FLAVOR" == "reasonix" ]]; then
   : "${CLAUDE_CODEX_NATIVE_SUBAGENTS:=${CLAUDE_REASONIX_NATIVE_SUBAGENTS:-1}}"
   export CLAUDE_CODEX_SUBAGENT_MODEL ANTHROPIC_CUSTOM_MODEL_OPTION
   export CLAUDE_CODEX_WORKFLOW_MODE CLAUDE_CODEX_NATIVE_SUBAGENTS
-  # The gateway is spawned with a stripped PATH that often lacks the fnm shim dir
-  # holding `reasonix` AND `node` (reasonix is a Node CLI — it needs node on PATH
-  # to run at all). Resolve them here, while the launcher's PATH is still complete,
-  # export REASONIX_BIN (absolute) and prepend the bin dir so the child gateway can
-  # actually invoke reasonix. Without this the lane fails with "Not logged in /
-  # please run /login" and returns a synthetic 0-token result.
-  if [[ -z "${REASONIX_BIN:-}" ]]; then
-    _rx_bin="$(command -v reasonix 2>/dev/null || true)"
-    if [[ -n "$_rx_bin" ]]; then
-      export REASONIX_BIN="$_rx_bin"
-      _rx_dir="$(dirname "$_rx_bin")"
-      case ":$PATH:" in
-        *":$_rx_dir:"*) ;;
-        *) export PATH="$_rx_dir:$PATH" ;;
-      esac
-    fi
+  # The engine is the owner's fork, bundled in-process and driven via the one-shot
+  # Node shim engine/run-lane.mjs (NO upstream reasonix subprocess). The gateway
+  # spawns that shim as `node`, so `node` must be on the child PATH. The gateway is
+  # often launched with a stripped PATH that lacks the fnm shim dir holding `node`;
+  # resolve it here while the launcher's PATH is still complete and prepend its dir.
+  # REASONIX_BIN is no longer required (it only ever served to locate node beside
+  # reasonix); we still honor it as a hint for where node lives, but a plain `node`
+  # on PATH is enough.
+  _node_bin="$(command -v node 2>/dev/null || true)"
+  if [[ -z "$_node_bin" && -n "${REASONIX_BIN:-}" ]]; then
+    _cand="$(dirname "$REASONIX_BIN")/node"
+    [[ -x "$_cand" ]] && _node_bin="$_cand"
   fi
-  # Session isolation for fan-out cache: stock reasonix acp names its persisted
-  # session by a MINUTE-granular timestamp and RESUMES any same-name session, so
-  # concurrent lanes inherit each other's history (measured: in_tok inflates
-  # ~+10829 tok/lane, cache swings 60-94%). Run each acp lane with an ephemeral
-  # (non-persisted) session so lanes are fully isolated. Honored by the one-line
-  # reasonix dist patch (REASONIX_ACP_EPHEMERAL_SESSION). The gateway also sets
-  # this on the child env; exporting here covers any direct reasonix spawn too.
-  : "${REASONIX_ACP_EPHEMERAL_SESSION:=1}"
-  export REASONIX_ACP_EPHEMERAL_SESSION
+  if [[ -n "$_node_bin" ]]; then
+    _node_dir="$(dirname "$_node_bin")"
+    case ":$PATH:" in
+      *":$_node_dir:"*) ;;
+      *) export PATH="$_node_dir:$PATH" ;;
+    esac
+  fi
+  # Point the gateway at the bundled fork engine dist (the self-contained, vendored
+  # build). The gateway also defaults to this path under INSTALL_HOME if unset, but
+  # exporting it here keeps the resolution explicit/observable.
+  : "${REASONIX_ENGINE_DIST:=$INSTALL_HOME/vendor/reasonix-engine/dist/index.js}"
+  export REASONIX_ENGINE_DIST
+  # DeepSeek auth: pass DEEPSEEK_API_KEY through if the user set it. If not, the
+  # in-process engine falls back to ~/.reasonix/config.json via loadEndpoint
+  # (exactly how the old acp path authenticated), so no key is required on a
+  # logged-in machine.
+  [[ -n "${DEEPSEEK_API_KEY:-}" ]] && export DEEPSEEK_API_KEY
 fi
 
 usage() {
@@ -552,7 +556,15 @@ doctor() {
   python3 -m py_compile "$MCP_SERVER_FILE" || ok=1
   python3 -m py_compile "$GATEWAY_FILE" || ok=1
   "$CLAUDE_BIN" --version >/dev/null || { echo "claude command failed" >&2; ok=1; }
-  command -v reasonix >/dev/null || { echo "reasonix command not found" >&2; ok=1; }
+  # The engine is the bundled fork, driven in-process via node; no upstream reasonix.
+  command -v node >/dev/null || { echo "node not found (the engine shim runs on node)" >&2; ok=1; }
+  local _engine_dist="${REASONIX_ENGINE_DIST:-$INSTALL_HOME/vendor/reasonix-engine/dist/index.js}"
+  [[ -f "$_engine_dist" ]] || { echo "missing bundled engine: $_engine_dist" >&2; ok=1; }
+  [[ -f "$INSTALL_HOME/engine/run-lane.mjs" ]] || { echo "missing engine shim: $INSTALL_HOME/engine/run-lane.mjs" >&2; ok=1; }
+  if [[ -z "${DEEPSEEK_API_KEY:-}" && ! -f "$HOME/.reasonix/config.json" ]]; then
+    echo "no DeepSeek auth: set DEEPSEEK_API_KEY or log in so ~/.reasonix/config.json exists" >&2
+    ok=1
+  fi
   report_active_sessions
   if (( ok == 0 )); then
     echo "reasonix fleet doctor: ok"

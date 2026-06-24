@@ -6,9 +6,19 @@ instead of burning Claude tokens. Default mode is safe: it does not change Claud
 Code's selected main model or set a process-wide LLM gateway.
 
 The fleet is a small launcher + a local Anthropic-compatible gateway + Claude Code hooks
-that route each `agent()` lane to `claude-reasonix-flash`, a model alias backed by
-`reasonix acp` (DeepSeek through your existing Reasonix login — no OpenAI or DeepSeek
-HTTP key needed).
+that route each `agent()` lane to `claude-reasonix-flash`, a model alias backed by an
+**in-process DeepSeek engine** — the owner's fork (built using ideas from reasonix),
+bundled with the fleet and called as a Node library, no separate CLI to install.
+
+## The engine
+
+The DeepSeek engine is a self-contained fork (`deepseek-reasonix-engine`), shipped as a
+prebuilt bundle under `vendor/reasonix-engine/` and committed in this repo — it *is* the
+shipped engine. Each lane runs through a one-shot Node shim (`engine/run-lane.mjs`) that
+imports the bundle and drives ONE DeepSeek turn, printing the lane's `{text, usage, cost}`
+back to the gateway. There is **no upstream reasonix install** and **no in-place patch** —
+the fork carries the ephemeral-session / cache behavior natively (see "Cache & ephemeral
+sessions" below).
 
 ## Requirements
 
@@ -16,8 +26,9 @@ The installer checks these and tells you what's missing; it never installs them 
 
 - **Python 3.8+** (`python3`)
 - **Claude Code CLI** (`claude`) — https://claude.com/claude-code
-- **Reasonix CLI** (`reasonix`) on PATH, or pass `REASONIX_BIN=/path/to/reasonix`
-- **node** (ships beside reasonix; the gateway needs it on PATH)
+- **node** 18+ — the engine runs in-process via a Node shim
+- **A DeepSeek credential** — either `DEEPSEEK_API_KEY` in your env, or a
+  `~/.reasonix/config.json` (the engine falls back to it automatically)
 
 ## Install
 
@@ -27,13 +38,12 @@ cd claude-reasonix-fleet
 ./install.sh
 ```
 
-`install.sh` is idempotent — re-run it any time (e.g. after upgrading reasonix). It:
+`install.sh` is idempotent — re-run it any time. It:
 
 1. checks the requirements above,
-2. copies the fleet into `~/.claude/reasonix-fleet`,
+2. copies the fleet **and the bundled fork engine** into `~/.claude/reasonix-fleet`,
 3. installs the launcher to `~/.local/bin/claude-reasonix` (warns if that dir is not on PATH),
-4. applies the Reasonix ACP ephemeral-session patch (see below),
-5. smoke-checks the install with the launcher's own `doctor`.
+4. smoke-checks the install with the launcher's own `doctor` (node + bundled engine + auth).
 
 If `~/.local/bin` is not on your PATH, add `export PATH="$HOME/.local/bin:$PATH"` to your
 shell rc and restart your shell.
@@ -70,25 +80,19 @@ dispatch through that MCP — so fan-out runs on DeepSeek while Claude keeps its
 tools, skills, plugins, auth, and selected model (e.g. `claude-opus-4-8`). Generic
 Claude subagents are blocked by hook policy and replaced by Reasonix Fleet workers.
 
-## The Reasonix ACP patch
+## Cache & ephemeral sessions
 
-claude-reasonix fans out many concurrent `reasonix acp` lanes. Stock reasonix names each
-acp session by a minute-granular timestamp, so lanes that start in the same minute share
-a session and load each other's history — inflating tokens and wrecking the prompt cache
-(measured: fan-out cache stuck at 60–94%). The patch gates the session name on
-`REASONIX_ACP_EPHEMERAL_SESSION=1` (which the launcher exports) so each lane uses an
-independent session; steady-state fan-out cache then reaches the high-90s.
+claude-reasonix fans out many concurrent lanes. If lanes share a persisted session they
+load each other's history — inflating tokens and wrecking the prompt cache (measured:
+fan-out cache stuck at 60–94%). The fork engine runs every lane with an **ephemeral
+session** natively: each lane is a one-shot in-process turn with `session: undefined`, so
+there is zero on-disk session state and no history bleed between lanes. Combined with the
+gateway's prefix prime-gate (which keeps the shared prefix warm in DeepSeek's server-side
+cache), steady-state fan-out cache reaches the high-90s and shared-prefix review hits the
+99%+ target.
 
-`install.sh` applies it via `patches/apply_ephemeral.py`. It edits reasonix's compiled
-`dist/cli/acp-*.js`, so **a reasonix upgrade reverts it** — just re-run `./install.sh`.
-The script is idempotent and can be run directly:
-
-```bash
-python3 patches/apply_ephemeral.py            # apply (or no-op if already patched)
-python3 patches/apply_ephemeral.py --revert   # undo
-```
-
-See `patches/ephemeral-session.md` for the full rationale and the exact edit.
+This is built into the bundled engine — there is no in-place patch to apply and nothing
+that a tool upgrade can revert.
 
 ## Defaults
 
@@ -107,18 +111,19 @@ CLAUDE_REASONIX_FLEET_DEFAULT_WORKERS=16
 Every `CLAUDE_REASONIX_*` variable has a `CLAUDE_CODEX_*` backward-compat fallback, so a
 shell that exports the old names still works.
 
-No external API key is needed for worker lanes — the gateway spawns `reasonix acp` using
-the Reasonix login already present in your terminal session.
+Worker lanes authenticate with `DEEPSEEK_API_KEY` if set, otherwise the bundled engine
+falls back to the DeepSeek credential in `~/.reasonix/config.json` — so on a logged-in
+machine no separate key export is needed.
 
 ## Uninstall
 
 ```bash
 ./uninstall.sh                  # remove the launcher and fleet code (keep logs/ledgers)
 ./uninstall.sh --purge          # also delete runtime logs/ledgers/state
-./uninstall.sh --revert-patch   # also undo the reasonix ACP patch
 ```
 
-reasonix, claude, and node are left untouched (the installer never installed them).
+claude and node are left untouched (the installer never installed them). There is no
+in-place engine patch to revert — the engine is bundled, not patched into another tool.
 
 ## Layout
 
@@ -129,7 +134,8 @@ reasonix-fleet-mcp.py        the reasonix_fleet MCP server (batch + worker tools
 hooks/                       Workflow rewrite + subagent-policy hooks
 bridge-settings.json         Claude settings template (__INSTALL_HOME__ rendered at run)
 system-prompt-reasonix.md    the reasonix-flavor system prompt
-patches/apply_ephemeral.py   the reasonix ACP ephemeral-session patcher
+engine/run-lane.mjs          one-shot Node shim that drives the in-process engine
+vendor/reasonix-engine/      the bundled fork engine (self-contained dist + grammars + tokenizer)
 install.sh / uninstall.sh    install / uninstall
 tests/                       the test suite (run: bash tests/test-reasonix-fleet.sh)
 runtime/realworld-bench.py   end-to-end quality + cache benchmark
