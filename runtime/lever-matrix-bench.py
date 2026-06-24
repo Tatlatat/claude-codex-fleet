@@ -200,6 +200,10 @@ DEFAULT_ON_LEVERS = [
 _LEVER_ENV_MAP: dict[str, str] = {
     "OUTPUT_DISCIPLINE": "CLAUDE_REASONIX_GATEWAY_OUTPUT_DISCIPLINE",
     "READ_SUMMARY": "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY",
+    # Lever C — gateway shared read-summary cache. Lives in the long-lived gateway:
+    # a file summarized by one lane is reused by later lanes referencing it. NOT in
+    # DEFAULT_ON until Scenario C2 measures it positive (run-2 cache >= run-1 + 5pts).
+    "READ_SUMMARY_CACHE": "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE",
 }
 
 
@@ -312,6 +316,59 @@ def _run_workload(port: int) -> dict:
     return out
 
 
+def run_c2_twice(json_out: bool = False) -> dict:
+    """Scenario C2 — run the SAME fan-out workload TWICE against ONE long-lived gateway
+    with Lever C ON. Run-1 populates the gateway's shared read-cache; run-2 reuses it
+    (miss->hit), so run-2's cache should be >= run-1 + 5pts. The gateway stays up across
+    both runs (the cache is a gateway module-level dict — an ephemeral per-run gateway
+    would share nothing). Returns {run1, run2, delta, pass}."""
+    flags = {"CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE": "1"}
+    # Fresh persisted cache so run-1 is a true cold start.
+    cache_file = ROOT / "runtime" / "read-summary-cache.json"
+    try:
+        cache_file.unlink()
+    except FileNotFoundError:
+        pass
+    proc, port = _start_gateway_with_flags(flags)
+    runs: list[dict] = []
+    try:
+        for _ in range(2):
+            out = _run_workload(port)
+            led = out.get("_ledger", {}) or {}
+            runs.append({
+                "lanes": led.get("lanes", 0),
+                "cache_weighted": led.get("weighted"),
+                "cache_median": led.get("median"),
+            })
+            time.sleep(1.0)
+    finally:
+        proc.send_signal(signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+    c1 = runs[0].get("cache_weighted") or 0.0
+    c2 = runs[1].get("cache_weighted") or 0.0
+    delta = round(c2 - c1, 1)
+    result = {
+        "scenario": "C2",
+        "run1_cache": c1,
+        "run2_cache": c2,
+        "delta": delta,
+        "pass": delta >= 5.0,
+        "runs": runs,
+    }
+    if json_out:
+        print(json.dumps(result, indent=2))
+    else:
+        print("\n=== Scenario C2 (twice-run, Lever C ON) ===")
+        print(f"  run-1 cache_weighted: {c1}%")
+        print(f"  run-2 cache_weighted: {c2}%")
+        print(f"  delta:                {delta:+} pts   "
+              f"({'PASS' if result['pass'] else 'FAIL'}: need run-2 >= run-1 + 5)")
+    return result
+
+
 def run_matrix(configs: list[dict], json_out: bool = False) -> list[dict]:
     """Run each config through a fresh gateway, measure, grade, return + print rows."""
     rows: list[dict] = []
@@ -404,7 +461,14 @@ def main() -> int:
     ap.add_argument("--levers", default="OUTPUT_DISCIPLINE,READ_SUMMARY",
                     help="comma-separated lever flag names to include in the matrix")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--c2", action="store_true",
+                    help="Scenario C2: run the fan-out workload TWICE under Lever C ON "
+                         "(one long-lived gateway) and assert run-2 cache >= run-1 + 5pts")
     args = ap.parse_args()
+
+    if args.c2:
+        result = run_c2_twice(json_out=args.json)
+        return 0 if result.get("pass") else 1
 
     levers = [x for x in (args.levers.split(",") if args.levers else []) if x.strip()]
     configs = build_matrix(levers)

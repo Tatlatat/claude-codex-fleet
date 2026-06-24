@@ -158,6 +158,244 @@ def keepalive_targets() -> list[tuple[str, str]]:
     return out
 
 
+# --- Lever C: gateway shared read-summary cache ----------------------------
+# DEFAULT OFF (measure-then-promote). A file read+summarized by ONE fan-out lane
+# is cached HERE, in the long-lived gateway process (NOT the shim — each shim lane
+# is an ephemeral subprocess that shares nothing). Later lanes on the SAME codebase
+# that reference the same file get its cached summary INJECTED into their prompt at
+# a FIXED boundary (after the shared system block, before the per-lane tail), turning
+# a raw re-read MISS into a cached-summary HIT.
+#
+# HIGHEST-RISK INVARIANT: the injected block MUST be byte-deterministic — same files
+# referenced => byte-identical injected bytes regardless of the per-lane tail — or it
+# forks the shared prefix that drives the prefix cache. Enforced by the BLOCKING test
+# tests/test-read-cache-bytestable.py. The block is SORTED by path, fixed-format, and
+# normalize_prefix-clean. Keyed by (path, mtime/hash); persisted to
+# runtime/read-summary-cache.json with mtime-freshness on load (Q10).
+_READ_SUMMARY_CACHE_LOCK = threading.Lock()
+# key: absolute file path  ->  {"fp": mtime/hash str, "summary": str, "ts": float}
+_READ_SUMMARY_CACHE: dict[str, dict[str, Any]] = {}
+_READ_CACHE_LOADED = False
+
+# Fixed, byte-stable block sentinels. These NEVER carry per-lane data so the block
+# is identical across lanes that reference the same cached files.
+READ_CACHE_BLOCK_BEGIN = "<<<REASONIX_READ_SUMMARY_CACHE>>>"
+READ_CACHE_BLOCK_END = "<<<END_REASONIX_READ_SUMMARY_CACHE>>>"
+
+# A file path referenced in a prompt: absolute POSIX-ish path ending in a code/text
+# extension, OR a repo-relative path with a slash. Conservative on purpose — a false
+# positive only fails to find a cache entry (no injection), never forks the prefix.
+_FILE_PATH_RE = re.compile(
+    r"(?<![\w./-])(/?(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9]{1,8})(?![\w/])"
+)
+
+
+def _read_cache_on() -> bool:
+    """Lever C master switch. DEFAULT OFF (reasonix-first, CLAUDE_CODEX_ fallback)."""
+    return os.getenv(
+        "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE",
+        os.getenv("CLAUDE_CODEX_GATEWAY_READ_SUMMARY_CACHE", "0"),
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def _read_cache_cap() -> int:
+    return env_int("CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE_CAP",
+                   "CLAUDE_CODEX_GATEWAY_READ_SUMMARY_CACHE_CAP", default=512)
+
+
+def _read_cache_ttl_s() -> float:
+    return env_float("CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE_TTL_S",
+                     "CLAUDE_CODEX_GATEWAY_READ_SUMMARY_CACHE_TTL_S", default=300.0)
+
+
+def _read_cache_max_bytes() -> int:
+    return env_int("CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE_MAX_BYTES",
+                   "CLAUDE_CODEX_GATEWAY_READ_SUMMARY_CACHE_MAX_BYTES", default=131072)
+
+
+def _read_cache_path() -> Path:
+    explicit = env_first("CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_CACHE_PATH",
+                         "CLAUDE_CODEX_GATEWAY_READ_SUMMARY_CACHE_PATH", default="")
+    if explicit:
+        return Path(explicit)
+    home = env_first("CLAUDE_REASONIX_FLEET_HOME", "CLAUDE_CODEX_FLEET_HOME",
+                     default=os.path.dirname(os.path.abspath(__file__)))
+    return Path(home) / "runtime" / "read-summary-cache.json"
+
+
+def _file_fingerprint(path: str) -> str | None:
+    """mtime-based fingerprint for freshness: if the file changed, its old summary
+    is stale and must not be served. Returns None when the file is unreadable."""
+    try:
+        st = os.stat(path)
+        return f"{int(st.st_mtime_ns)}:{st.st_size}"
+    except OSError:
+        return None
+
+
+def extract_file_paths_from_prompt(prompt: str) -> list[str]:
+    """Find file paths referenced in a prompt. Returns a SORTED, de-duplicated list
+    so downstream injection is order-independent and byte-deterministic. Conservative:
+    only matches dotted-extension paths with a directory component, so prose words are
+    not mistaken for files (a miss is harmless — no injection)."""
+    if not prompt:
+        return []
+    found: set[str] = set()
+    for m in _FILE_PATH_RE.finditer(prompt):
+        found.add(m.group(1))
+    return sorted(found)
+
+
+def _read_cache_store(path: str, fp: str, summary: str) -> None:
+    """Insert/refresh one entry (caller may hold or not hold the lock — this takes it).
+    Bounds the dict to _CAP via FIFO eviction of the oldest inserted key (mirror of
+    _evict_oldest for the prime dicts), keeping the newest (live) keys."""
+    summary = summary[: _read_cache_max_bytes()]
+    with _READ_SUMMARY_CACHE_LOCK:
+        # Re-insert moves the key to newest (dict preserves insertion order); pop first.
+        _READ_SUMMARY_CACHE.pop(path, None)
+        _READ_SUMMARY_CACHE[path] = {"fp": fp, "summary": summary, "ts": _time.time()}
+        cap = _read_cache_cap()
+        if cap > 0:
+            while len(_READ_SUMMARY_CACHE) > cap:
+                _READ_SUMMARY_CACHE.pop(next(iter(_READ_SUMMARY_CACHE)), None)
+
+
+def _read_cache_lookup(path: str) -> str | None:
+    """Return a FRESH cached summary for `path`, or None. Fresh = within TTL AND the
+    file's current fingerprint matches the cached one (mtime-freshness). Stale entries
+    are dropped."""
+    ttl = _read_cache_ttl_s()
+    now = _time.time()
+    with _READ_SUMMARY_CACHE_LOCK:
+        entry = _READ_SUMMARY_CACHE.get(path)
+        if entry is None:
+            return None
+        if ttl > 0 and (now - float(entry.get("ts", 0))) > ttl:
+            _READ_SUMMARY_CACHE.pop(path, None)
+            return None
+        cur_fp = _file_fingerprint(path)
+        # If the file is gone/unreadable we can't verify freshness -> serve only when
+        # we have no fingerprint to compare (keep deterministic: drop on mismatch).
+        if cur_fp is not None and entry.get("fp") not in (None, "", cur_fp):
+            _READ_SUMMARY_CACHE.pop(path, None)
+            return None
+        return str(entry.get("summary") or "")
+
+
+def read_cache_injection_block(prompt: str) -> str:
+    """Build the byte-deterministic cached-summary block to inject for the files this
+    prompt references. Returns "" when the lever is OFF, or no referenced file has a
+    fresh cache entry. The block is SORTED by path and fixed-format, so two lanes that
+    reference the same cached files get BYTE-IDENTICAL bytes regardless of their tail.
+    normalize_prefix-clean by construction (no volatile lines)."""
+    if not _read_cache_on():
+        return ""
+    paths = extract_file_paths_from_prompt(prompt)
+    if not paths:
+        return ""
+    lines: list[str] = []
+    for p in paths:  # already sorted + de-duped
+        summary = _read_cache_lookup(p)
+        if not summary:
+            continue
+        # One line per file, fixed format. Collapse newlines so the block stays
+        # single-line-per-file and byte-stable (summaries are compact JSON anyway).
+        flat = " ".join(summary.split())
+        lines.append(f"- {p}: {flat}")
+    if not lines:
+        return ""
+    body = "\n".join(lines)
+    block = (
+        f"{READ_CACHE_BLOCK_BEGIN}\n"
+        "Cached read-summaries for files this task references (reuse instead of "
+        "re-reading; the file is unchanged since it was summarized):\n"
+        f"{body}\n"
+        f"{READ_CACHE_BLOCK_END}"
+    )
+    # Belt-and-suspenders: ensure no volatile billing line ever rides along.
+    return normalize_prefix(block)
+
+
+def populate_read_cache(prompt: str, summary: str) -> None:
+    """After a lane returns, cache its summary keyed by the file(s) it read. No-op when
+    the lever is OFF, the summary is empty, or the prompt referenced no file path.
+    Best-effort and exception-safe (a cache failure must never break a lane)."""
+    if not _read_cache_on():
+        return
+    if not summary or not summary.strip():
+        return
+    try:
+        paths = extract_file_paths_from_prompt(prompt)
+        if not paths:
+            return
+        for p in paths:
+            fp = _file_fingerprint(p) or ""
+            _read_cache_store(p, fp, summary)
+        save_read_cache()
+    except Exception:
+        pass
+
+
+def save_read_cache() -> None:
+    """Persist the cache to runtime/read-summary-cache.json (Q10). Append-only-ish:
+    we rewrite the whole small dict atomically. Exception-safe."""
+    if not _read_cache_on():
+        return
+    try:
+        path = _read_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _READ_SUMMARY_CACHE_LOCK:
+            data = {k: dict(v) for k, v in _READ_SUMMARY_CACHE.items()}
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def load_read_cache() -> None:
+    """Load persisted summaries on startup, dropping entries whose file changed since
+    they were cached (mtime-freshness on load, Q10) or whose TTL has expired."""
+    global _READ_CACHE_LOADED
+    if not _read_cache_on():
+        return
+    try:
+        path = _read_cache_path()
+        if not path.exists():
+            _READ_CACHE_LOADED = True
+            return
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            _READ_CACHE_LOADED = True
+            return
+        ttl = _read_cache_ttl_s()
+        now = _time.time()
+        with _READ_SUMMARY_CACHE_LOCK:
+            for p, entry in raw.items():
+                if not isinstance(entry, dict):
+                    continue
+                summary = str(entry.get("summary") or "")
+                if not summary:
+                    continue
+                ts = float(entry.get("ts", 0) or 0)
+                if ttl > 0 and (now - ts) > ttl:
+                    continue  # stale by TTL
+                cur_fp = _file_fingerprint(p)
+                cached_fp = entry.get("fp")
+                # mtime-freshness on load: drop if the file changed.
+                if cur_fp is not None and cached_fp not in (None, "", cur_fp):
+                    continue
+                _READ_SUMMARY_CACHE[p] = {"fp": cached_fp, "summary": summary, "ts": ts}
+            cap = _read_cache_cap()
+            if cap > 0:
+                while len(_READ_SUMMARY_CACHE) > cap:
+                    _READ_SUMMARY_CACHE.pop(next(iter(_READ_SUMMARY_CACHE)), None)
+        _READ_CACHE_LOADED = True
+    except Exception:
+        _READ_CACHE_LOADED = True
+
+
 # --- Staggered prime serialization -----------------------------------------
 # DeepSeek persists a prefix only AFTER a request finishes — so when N lanes of
 # one prefix family hit concurrently, the first 2-3 race the persist and all miss
@@ -579,6 +817,10 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         _max_out = min(_caps) if _caps else None
         text, usage = run_reasonix_acp(
             prompt, config, max_output_tokens=_max_out)
+        # Lever C (default off): cache this lane's summary keyed by the file(s) it
+        # read so later lanes on the same codebase reuse it (miss->hit). No-op when
+        # the flag is off. Best-effort; never breaks the lane.
+        populate_read_cache(prompt, text)
         gateway_trace("reasonix_acp_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
         ledger = env_first(
@@ -1113,6 +1355,17 @@ def openai_messages_to_prompt(messages: list[JSON], tools: Any = None) -> str:
             parts.append(guard)
     if generic_tools_block:
         parts.append(generic_tools_block)
+    # Lever C (default off): inject cached read-summaries at the FIXED boundary —
+    # AFTER the shared/lane-invariant blocks (system + guard + generic-tools note),
+    # BEFORE the per-lane task+history (`rest`). The block is byte-deterministic for a
+    # given set of referenced files (sorted, fixed-format, normalize_prefix-clean), so
+    # two lanes that reference the same cached files share these bytes and the prefix
+    # is NOT forked. Built from the per-lane TASK text (`rest`), not `parts`, so the
+    # block reflects only the files this lane actually references. Off => zero
+    # injection, byte-identical to pre-C (enforced by test-read-cache-bytestable.py).
+    cache_block = read_cache_injection_block("\n\n".join(rest))
+    if cache_block:
+        parts.append(cache_block)
     parts.extend(rest)
     if structured_instruction:
         parts.append(structured_instruction)
@@ -1759,6 +2012,9 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         _max_out = min(_caps) if _caps else None
         text, usage = run_reasonix_acp(
             prompt, config, max_output_tokens=_max_out)
+        # Lever C (default off): populate the shared read-cache from this lane's
+        # summary (see /v1/messages path). No-op when off; best-effort.
+        populate_read_cache(prompt, text)
         gateway_trace("reasonix_acp_openai_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
         ledger = env_first(
@@ -2314,6 +2570,10 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=int(os.getenv("CLAUDE_REASONIX_GATEWAY_PORT", os.getenv("CLAUDE_CODEX_GATEWAY_PORT", "0"))))
     parser.add_argument("--port-file", default="")
     args = parser.parse_args()
+
+    # Lever C (default off): load any persisted read-summary cache on startup, dropping
+    # entries whose file changed since they were cached (mtime-freshness on load, Q10).
+    load_read_cache()
 
     if _keepalive_enabled():
         threading.Thread(target=_keepalive_loop, daemon=True).start()
