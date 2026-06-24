@@ -569,8 +569,16 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
                 pass
         lane_type = classify_lane_type(payload.get("tools"), prompt)
         # Lever F HARD layer (default off): cap output by lane-type budget.
+        # Lever A HARD layer (default off): for read lanes, read_summary_budget()
+        # returns 512 when READ_SUMMARY is on.  Both levers agree on 512 for read
+        # lanes; pick the tighter (smallest) non-None cap so either flag alone or
+        # both together yield the same correct cap.
+        _f_cap = output_discipline_budget(lane_type)
+        _a_cap = read_summary_budget() if lane_type == "read" else None
+        _caps = [c for c in (_f_cap, _a_cap) if c is not None]
+        _max_out = min(_caps) if _caps else None
         text, usage = run_reasonix_acp(
-            prompt, config, max_output_tokens=output_discipline_budget(lane_type))
+            prompt, config, max_output_tokens=_max_out)
         gateway_trace("reasonix_acp_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
         ledger = env_first(
@@ -964,6 +972,67 @@ def output_discipline_budget(lane_type: str) -> int | None:
         "CLAUDE_CODEX_GATEWAY_OUTPUT_DISCIPLINE_MAX_TOKENS_DEFAULT", default=2048)
 
 
+def _read_summary_on() -> bool:
+    """Lever A master switch. DEFAULT OFF (measure-then-promote, same as F)."""
+    return os.getenv(
+        "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY",
+        os.getenv("CLAUDE_CODEX_GATEWAY_READ_SUMMARY",
+                  os.getenv("READ_SUMMARY", "0")),
+    ).lower() in {"1", "true", "yes", "on"}
+
+
+def read_summary_budget() -> int | None:
+    """Lever A HARD cap for read lanes. Returns None when READ_SUMMARY is off
+    (no cap, true no-op). When on, returns the READ_SUMMARY max output tokens
+    (default 512 — same as F's read budget; they agree so either flag is on
+    the cap is 512 and the plumbing has no conflict)."""
+    if not _read_summary_on():
+        return None
+    return env_int(
+        "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY_MAX_TOKENS",
+        "CLAUDE_CODEX_GATEWAY_READ_SUMMARY_MAX_TOKENS", default=512)
+
+
+def read_lane_summary_instruction(lane_type: str, tools: Any = None) -> str:
+    """Lever A instruction layer — schema-enforced read summary.
+
+    Returns "" unless:
+      - READ_SUMMARY env is on, AND
+      - lane_type is 'read', AND
+      - no StructuredOutput tool is already injected (mutually exclusive with
+        the tool-use path to avoid double-injection).
+
+    When all conditions hold, returns a fixed-schema block appended LAST in the
+    prompt (same slot as F's output_discipline_directive) instructing the model
+    to reply ONLY with a compact JSON object:
+      {"findings": [...], "files_read": [...], "flag": "..."}
+
+    This is the SECOND-ORDER lever: the read lane's output is the downstream
+    synthesize lane's input. Shrinking read output → smaller synth input →
+    cheaper synth lane even with no change to the synth lane's own directives.
+
+    Q4 contract: schema is FIXED (prefix-stable, no new metadata channel)."""
+    if not _read_summary_on():
+        return ""
+    if lane_type != "read":
+        return ""
+    # Mutually exclusive with StructuredOutput tool injection
+    if tools and isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict):
+                name = tool.get("name") or ""
+                if is_structured_output_tool_name(name):
+                    return ""
+    return (
+        "READ LANE SUMMARY REQUIREMENT: Your output is consumed by a downstream "
+        "lane — reply with ONLY this JSON object and nothing else: "
+        "{\"findings\": [\"<terse bullet, max 5>\"], "
+        "\"files_read\": [\"<filename>\"], "
+        "\"flag\": \"<empty, or one sentence if the task is too large for one lane>\"}. "
+        "Do NOT paste raw file contents. Do NOT write prose. Emit the JSON directly."
+    )
+
+
 def _tool_choice_forces(payload: JSON, tool_name: str) -> bool:
     """True when the caller forced this exact tool via tool_choice (Anthropic
     {type:'tool',name} or OpenAI {type:'function',function:{name}}) or via a
@@ -1061,6 +1130,18 @@ def openai_messages_to_prompt(messages: list[JSON], tools: Any = None) -> str:
     discipline = output_discipline_directive()
     if discipline:
         parts.append(discipline)
+    # Lever A SOFT layer (default off). Appended LAST in the same slot as F's
+    # directive. Only fires for read lanes when READ_SUMMARY is on AND no
+    # StructuredOutput tool was already injected (mutually exclusive). The HARD
+    # layer (read_summary_budget -> maxOutputTokens) is applied at the call site.
+    # Classify from the assembled prompt text (same text classify_lane_type sees
+    # at the call site, since the call site calls classify_lane_type on this
+    # function's return value).
+    _prompt_so_far = "\n\n".join(parts)
+    _a_lane_type = classify_lane_type(tools, _prompt_so_far)
+    read_summary = read_lane_summary_instruction(_a_lane_type, tools)
+    if read_summary:
+        parts.append(read_summary)
     return "\n\n".join(parts).strip() or "Complete the requested Reasonix worker task."
 
 
@@ -1669,8 +1750,15 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         record_keepalive_prefix(prompt)
         lane_type = classify_lane_type(payload.get("tools"), prompt)
         # Lever F HARD layer (default off): cap output by lane-type budget.
+        # Lever A HARD layer (default off): for read lanes, read_summary_budget()
+        # returns 512 when READ_SUMMARY is on.  Both levers agree on 512 for read
+        # lanes; pick the tighter (smallest) non-None cap.
+        _f_cap = output_discipline_budget(lane_type)
+        _a_cap = read_summary_budget() if lane_type == "read" else None
+        _caps = [c for c in (_f_cap, _a_cap) if c is not None]
+        _max_out = min(_caps) if _caps else None
         text, usage = run_reasonix_acp(
-            prompt, config, max_output_tokens=output_discipline_budget(lane_type))
+            prompt, config, max_output_tokens=_max_out)
         gateway_trace("reasonix_acp_openai_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
         ledger = env_first(

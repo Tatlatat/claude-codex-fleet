@@ -191,7 +191,22 @@ WORKLOAD_SPEC = build_workload()
 # DEFAULT_ON lists the levers that the best_combo turns on together.
 DEFAULT_ON_LEVERS = [
     "OUTPUT_DISCIPLINE",
+    "READ_SUMMARY",
 ]
+
+# Short lever name → full gateway env var name.  The gateway reads the full name;
+# the bench's --levers arg uses the short name for readability.  Levers absent
+# from this map use the short name directly as the env var (legacy/future levers).
+_LEVER_ENV_MAP: dict[str, str] = {
+    "OUTPUT_DISCIPLINE": "CLAUDE_REASONIX_GATEWAY_OUTPUT_DISCIPLINE",
+    "READ_SUMMARY": "CLAUDE_REASONIX_GATEWAY_READ_SUMMARY",
+}
+
+
+def _lever_flags(lever_name: str) -> dict[str, str]:
+    """Return the {env_var: "1"} dict for a single lever."""
+    env = _LEVER_ENV_MAP.get(lever_name, lever_name)
+    return {env: "1"}
 
 
 def build_matrix(levers: list[str]) -> list[dict]:
@@ -202,8 +217,11 @@ def build_matrix(levers: list[str]) -> list[dict]:
     """
     configs: list[dict] = [{"name": "baseline", "flags": {}}]
     for lv in levers:
-        configs.append({"name": lv, "flags": {lv: "1"}})
-    best = {lv: "1" for lv in levers if lv in DEFAULT_ON_LEVERS}
+        configs.append({"name": lv, "flags": _lever_flags(lv)})
+    best: dict[str, str] = {}
+    for lv in levers:
+        if lv in DEFAULT_ON_LEVERS:
+            best.update(_lever_flags(lv))
     configs.append({"name": "best_combo", "flags": best})
     return configs
 
@@ -382,8 +400,8 @@ def _print_row(row: dict) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default=None,
-                    help="run only the named config (e.g. 'baseline')")
-    ap.add_argument("--levers", default="OUTPUT_DISCIPLINE",
+                    help="comma-separated config names to run (e.g. 'baseline,READ_SUMMARY')")
+    ap.add_argument("--levers", default="OUTPUT_DISCIPLINE,READ_SUMMARY",
                     help="comma-separated lever flag names to include in the matrix")
     ap.add_argument("--json", action="store_true", help="machine-readable output")
     args = ap.parse_args()
@@ -391,7 +409,8 @@ def main() -> int:
     levers = [x for x in (args.levers.split(",") if args.levers else []) if x.strip()]
     configs = build_matrix(levers)
     if args.only:
-        configs = [c for c in configs if c["name"] == args.only]
+        only_names = {x.strip() for x in args.only.split(",") if x.strip()}
+        configs = [c for c in configs if c["name"] in only_names]
         if not configs:
             print(f"no config named {args.only!r}", file=sys.stderr)
             return 2
