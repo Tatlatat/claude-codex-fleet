@@ -109,6 +109,55 @@ def _evict_oldest(*dicts: dict) -> None:
         while len(d) > cap:
             d.pop(next(iter(d)), None)
 
+
+# --- Cross-workflow keep-alive ---------------------------------------------
+# DeepSeek's shared-prefix cache is best-effort and evicted by LRU/idle: a warm
+# codebase prefix that many same-context workflows reuse gets cold-dropped during a
+# gap between workflows (measured: an accumulating 96.96->99.60% run cold-dropped to
+# 74% on one workflow). A tiny background keep-alive re-touches each recently-seen
+# shared prefix periodically, refreshing its LRU recency so it survives the gap
+# between same-codebase workflows. Records the LEADING slice of each lane's prompt
+# (the cacheable shared block) keyed by prefix-family. Off via
+# CLAUDE_CODEX_GATEWAY_KEEPALIVE=0.
+_KEEPALIVE_LOCK = threading.Lock()
+_KEEPALIVE_PREFIXES: dict[str, tuple[str, float]] = {}
+
+
+def _keepalive_enabled() -> bool:
+    return env_first("CLAUDE_CODEX_GATEWAY_KEEPALIVE", default="1").lower() not in {"0", "false", "no", "off"}
+
+
+def record_keepalive_prefix(prompt: str) -> None:
+    """Remember the leading shared-prefix slice of a lane's prompt so a background
+    keep-alive can later re-warm it. No-op when disabled or the prompt is too short
+    to carry a meaningful shared prefix."""
+    if not _keepalive_enabled():
+        return
+    head_len = env_int("CLAUDE_CODEX_GATEWAY_KEEPALIVE_HEAD", default=8192)
+    if len(prompt) < min(head_len, 2000):
+        return
+    key = prefix_prime_key(prompt)
+    head = prompt[:head_len]
+    with _KEEPALIVE_LOCK:
+        _KEEPALIVE_PREFIXES[key] = (head, _time.time())
+        _evict_oldest(_KEEPALIVE_PREFIXES)
+
+
+def keepalive_targets() -> list[tuple[str, str]]:
+    """(key, head) pairs for families seen within the freshness window — the prefixes
+    worth re-warming. Stale families (the user moved on) are skipped and pruned."""
+    window = env_float("CLAUDE_CODEX_GATEWAY_KEEPALIVE_WINDOW_SECONDS", default=600.0)
+    now = _time.time()
+    out: list[tuple[str, str]] = []
+    with _KEEPALIVE_LOCK:
+        for key, (head, ts) in list(_KEEPALIVE_PREFIXES.items()):
+            if now - ts <= window:
+                out.append((key, head))
+            else:
+                _KEEPALIVE_PREFIXES.pop(key, None)
+    return out
+
+
 # --- Staggered prime serialization -----------------------------------------
 # DeepSeek persists a prefix only AFTER a request finishes — so when N lanes of
 # one prefix family hit concurrently, the first 2-3 race the persist and all miss
@@ -508,6 +557,7 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         messages = anthropic_messages_to_openai(payload)
         prompt = openai_messages_to_prompt(messages, payload.get("tools"))
         register_lane_attempt(prompt)
+        record_keepalive_prefix(prompt)
         if os.getenv("CLAUDE_CODEX_GATEWAY_STRUCTURED_DEBUG", "").lower() in {"1", "true", "yes", "on"}:
             try:
                 _dd = Path(env_first("CLAUDE_CODEX_FLEET_HOME",
@@ -1628,6 +1678,7 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         normalized = [item for item in messages if isinstance(item, dict)]
         prompt = openai_messages_to_prompt(normalized, payload.get("tools"))
         register_lane_attempt(prompt)
+        record_keepalive_prefix(prompt)
         text, usage = run_reasonix_acp(prompt, config)
         gateway_trace("reasonix_acp_openai_response", model=requested_model,
                       cost=usage.get("reasonix_cost_usd"), cache=usage.get("reasonix_cache_pct"))
@@ -2152,12 +2203,40 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 
+def _keepalive_loop() -> None:
+    """Background thread: every interval, re-touch each recently-seen shared prefix
+    with a tiny request so DeepSeek's LRU keeps it resident between same-codebase
+    workflows. Each ping carries ONLY the stored head (the cacheable shared block) +
+    a 1-token ask, so it costs ~one cache-hit-priced request and refreshes recency.
+    Best-effort: swallows all errors; never affects real lanes."""
+    interval = env_float("CLAUDE_CODEX_GATEWAY_KEEPALIVE_INTERVAL_SECONDS", default=120.0)
+    config = model_registry().get("claude-reasonix-flash", {})
+    while True:
+        try:
+            _time.sleep(max(15.0, interval))
+            if not _keepalive_enabled():
+                continue
+            for _key, head in keepalive_targets():
+                try:
+                    # A minimal ping: the shared head + a 1-word ask. Hits the warm
+                    # prefix, refreshes its LRU recency, returns fast.
+                    run_reasonix_acp(head + "\nReply with one word.", config)
+                    gateway_trace("keepalive_ping", key=_key[:12])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Local native-model gateway for claude-codex")
     parser.add_argument("--host", default=os.getenv("CLAUDE_CODEX_GATEWAY_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("CLAUDE_CODEX_GATEWAY_PORT", "0")))
     parser.add_argument("--port-file", default="")
     args = parser.parse_args()
+
+    if _keepalive_enabled():
+        threading.Thread(target=_keepalive_loop, daemon=True).start()
 
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     actual_port = int(server.server_address[1])
