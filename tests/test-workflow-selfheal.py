@@ -47,7 +47,7 @@ def test_no_reasonix_remap_no_key():
     """The reasonix-remap path has been removed: no DEEPSEEK_API_KEY must NOT trigger
     any script mutation or remap action — deepseek lanes pass through unchanged."""
     _clear_deepseek_env()
-    new, ctx, rep = sh.preflight(SCRIPT, "router")
+    new, ctx, rep = sh.preflight(SCRIPT, "native")
     # No deepseek_key check in the report (that probe was removed with the remap).
     expect("deepseek_key" not in rep["checks"],
            f"deepseek_key check should be gone; got: {list(rep['checks'].keys())}")
@@ -66,7 +66,7 @@ def test_script_unchanged_no_sentinel():
     """Preflight must return the script byte-for-byte unchanged (no sentinel,
     no surgery) because the reasonix-remap logic no longer exists."""
     _clear_deepseek_env()
-    new, _ctx, _rep = sh.preflight(SCRIPT, "router")
+    new, _ctx, _rep = sh.preflight(SCRIPT, "native")
     expect(new == SCRIPT, f"script must be returned unchanged; diff:\n{new!r}\nvs\n{SCRIPT!r}")
     # Specifically: sentinel is absent.
     expect("globalThis.__claudeReasonixForceReasonixOnly" not in new,
@@ -81,7 +81,7 @@ def test_script_passthrough_with_key_present():
     check in report and no remap action (reasonix remap removed entirely)."""
     os.environ["DEEPSEEK_API_KEY"] = "sk-test"
     try:
-        new, ctx, rep = sh.preflight(SCRIPT, "router")
+        new, ctx, rep = sh.preflight(SCRIPT, "native")
         expect("deepseek_key" not in rep["checks"],
                "deepseek_key check must be gone even when key is present")
         expect("__claudeReasonixForceReasonixOnly" not in new,
@@ -98,7 +98,7 @@ def test_gateway_down_reported():
     # returning not-ok for an unused port by pointing at a closed port via env is
     # not supported, so just assert the gateway check key exists and is a dict.
     _clear_deepseek_env()
-    _, ctx, rep = sh.preflight(SCRIPT, "router")
+    _, ctx, rep = sh.preflight(SCRIPT, "native")
     expect("gateway" in rep["checks"], "gateway check missing")
     expect("ok" in rep["checks"]["gateway"], "gateway check has no ok field")
 
@@ -169,7 +169,7 @@ def test_gateway_detected_via_base_url_no_port_file():
 def test_fail_open_on_bad_input():
     # None script would normally explode; preflight must not raise.
     try:
-        new, ctx, rep = sh.preflight(None, "router")  # type: ignore[arg-type]
+        new, ctx, rep = sh.preflight(None, "native")  # type: ignore[arg-type]
     except Exception as exc:  # noqa: BLE001
         raise SystemExit(f"FAIL: preflight raised on bad input: {exc}")
     # A None script must NOT trigger the old AttributeError('NoneType'... .count) —
@@ -245,7 +245,7 @@ def test_reasonix_cli_check_in_reasonix_flavor():
     os.environ["CLAUDE_REASONIX_FLAVOR"] = "reasonix"
     os.environ["REASONIX_BIN"] = "/nonexistent/reasonix-xyz"
     try:
-        _, ctx, rep = sh.preflight(SCRIPT, "router")
+        _, ctx, rep = sh.preflight(SCRIPT, "native")
         expect("reasonix_cli" in rep["checks"], "reasonix_cli key missing from checks")
         expect(rep["checks"]["reasonix_cli"]["present"] is False,
                f"expected present=False for nonexistent binary, got: {rep['checks']['reasonix_cli']}")
@@ -254,7 +254,7 @@ def test_reasonix_cli_check_in_reasonix_flavor():
 
         # Part 2: use 'sh' (POSIX shell) as a guaranteed-present binary.
         os.environ["REASONIX_BIN"] = "sh"
-        _, _ctx2, rep2 = sh.preflight(SCRIPT, "router")
+        _, _ctx2, rep2 = sh.preflight(SCRIPT, "native")
         expect("reasonix_cli" in rep2["checks"], "reasonix_cli key missing from checks (present case)")
         expect(rep2["checks"]["reasonix_cli"]["present"] is True,
                f"expected present=True for 'sh' binary, got: {rep2['checks']['reasonix_cli']}")

@@ -88,7 +88,6 @@ def test_mode_and_structure_preserved():
 def test_guide_appends_in_each_mode():
     for mode, marker in (
         ("fleet", "Reasonix Fleet"),
-        ("router", "Claude Code Router routes"),
         ("native", "native Claude Code subagents"),
     ):
         out = run_hook({

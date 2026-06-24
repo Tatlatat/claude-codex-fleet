@@ -251,8 +251,6 @@ def workflow_mode() -> str:
     mode = os.getenv("CLAUDE_REASONIX_WORKFLOW_MODE", os.getenv("CLAUDE_CODEX_WORKFLOW_MODE", "fleet")).lower()
     if mode in {"native", "gateway", "native-gateway", "native_gateway"}:
         return "native"
-    if mode in {"router", "ccr", "claude-code-router", "claude_code_router"}:
-        return "router"
     return "fleet"
 
 
@@ -444,15 +442,6 @@ def main() -> int:
             "Workflow scripts are rewritten by claude-reasonix so each "
             "Workflow agent lane calls Reasonix Fleet instead of doing "
             "the worker task as a Claude subagent."
-        )
-    elif mode == "router":
-        additional_context = (
-            "Workflow scripts are rewritten by claude-reasonix so the real "
-            "Claude Code Workflow/Dynamic Workflow runtime remains active, "
-            "but each agent() lane runs as native Claude Code subagents. "
-            "Claude Code Router routes the generated reasonix-* and deepseek-* "
-            "native Claude Code subagent types to claude-reasonix-flash "
-            "through the local gateway. This hook does not auto-enable UltraCode."
         )
     else:
         additional_context = (
