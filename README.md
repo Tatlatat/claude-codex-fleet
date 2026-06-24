@@ -58,7 +58,6 @@ claude-reasonix status       # show mode and worker count
 claude-reasonix workers N    # set default concurrent Reasonix tasks
 claude-reasonix task "..."   # run one Claude task through the fleet, then auto-disable
 claude-reasonix run          # start Claude in Reasonix Fleet mode (default)
-claude-reasonix router       # explicit Claude Code Router native-subagent mode
 claude-reasonix plain        # raw Claude, no fleet
 claude-reasonix doctor       # validate files and local commands
 ```
@@ -70,14 +69,6 @@ In default safe mode the launcher generates `runtime/mcp.json` with one MCP serv
 dispatch through that MCP — so fan-out runs on DeepSeek while Claude keeps its normal
 tools, skills, plugins, auth, and selected model (e.g. `claude-opus-4-8`). Generic
 Claude subagents are blocked by hook policy and replaced by Reasonix Fleet workers.
-
-In **router** / **native** modes the same hook instead sets each lane's `agentType` to
-one of the native `reasonix-worker` / `reasonix-security` / `reasonix-reviewer` /
-`reasonix-verify` agents (all backed by `claude-reasonix-flash`), giving the parallel
-phase fan-out. Router mode also sets `CLAUDE_CODE_SUBAGENT_MODEL=claude-reasonix-flash`
-so built-in agent teams (e.g. `/deep-research`) inherit the Reasonix alias. Router mode
-needs an Anthropic API key/token to preserve the main-model route; safe mode and raw
-`claude` do not.
 
 ## The Reasonix ACP patch
 
@@ -104,15 +95,13 @@ See `patches/ephemeral-session.md` for the full rationale and the exact edit.
 Per-task MCP settings (read by the Fleet MCP), overridable via env:
 
 ```bash
-REASONIX_FLEET_MODEL=gpt-5.4
+REASONIX_FLEET_MODEL=deepseek-v4-flash
 REASONIX_FLEET_REASONING=xhigh
 REASONIX_FLEET_SERVICE_TIER=fast
 REASONIX_FLEET_WEB_SEARCH=live
 REASONIX_FLEET_SANDBOX=workspace-write
 REASONIX_FLEET_APPROVAL=never
 CLAUDE_REASONIX_FLEET_DEFAULT_WORKERS=16
-CLAUDE_REASONIX_CCR_MODEL=claude-reasonix-flash       # router worker model
-CLAUDE_REASONIX_ROUTER_MAIN_MODEL=claude-opus-4-8     # router main model
 ```
 
 Every `CLAUDE_REASONIX_*` variable has a `CLAUDE_CODEX_*` backward-compat fallback, so a
@@ -137,7 +126,6 @@ reasonix, claude, and node are left untouched (the installer never installed the
 bin/claude-reasonix          the launcher
 reasonix-native-gateway.py   local Anthropic-compatible gateway (reasonix_cli provider)
 reasonix-fleet-mcp.py        the reasonix_fleet MCP server (batch + worker tools)
-ccr-claude-proxy.py          Claude Code Router compatibility proxy (router mode)
 hooks/                       Workflow rewrite + subagent-policy hooks
 bridge-settings.json         Claude settings template (__INSTALL_HOME__ rendered at run)
 system-prompt-reasonix.md    the reasonix-flavor system prompt
