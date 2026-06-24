@@ -122,14 +122,47 @@ def preflight(script: str, mode: str) -> tuple[str, str, dict]:
             )
 
         if os.getenv("CLAUDE_REASONIX_FLAVOR", os.getenv("CLAUDE_CODEX_FLAVOR")) == "reasonix":
-            reasonix_present = bool(shutil.which(os.getenv("REASONIX_BIN", "reasonix")))
-            report["checks"]["reasonix_cli"] = {"present": reasonix_present}
-            if not reasonix_present:
+            # The engine is now the in-process fork shim (`node engine/run-lane.mjs`),
+            # NOT upstream `reasonix acp`. So the precondition is: a `node` binary on
+            # PATH AND the engine handle present (the shim file + a resolvable built
+            # fork dist). Worker lanes fail without these, exactly as they used to
+            # fail without the reasonix CLI.
+            node_bin = os.getenv("CLAUDE_REASONIX_NODE_BIN", os.getenv("NODE_BIN", "node"))
+            node_present = bool(shutil.which(node_bin))
+            install_home = Path(
+                os.getenv("CLAUDE_REASONIX_FLEET_INSTALL_HOME",
+                          os.getenv("CLAUDE_CODEX_FLEET_INSTALL_HOME", str(FLEET_HOME)))
+            )
+            shim_path = install_home / "engine" / "run-lane.mjs"
+            dist_env = os.getenv("REASONIX_ENGINE_DIST")
+            vendored_dist = install_home / "vendor" / "reasonix-engine" / "dist" / "index.js"
+            dist_present = bool(
+                (dist_env and Path(dist_env).exists()) or vendored_dist.exists()
+            )
+            shim_present = shim_path.exists()
+            engine_present = node_present and shim_present and dist_present
+            report["checks"]["engine"] = {
+                "present": engine_present,
+                "node": node_present,
+                "shim": shim_present,
+                "dist": dist_present,
+            }
+            # Back-compat alias: older monitoring reads checks["reasonix_cli"].present.
+            report["checks"]["reasonix_cli"] = {"present": engine_present}
+            if not engine_present:
+                missing = []
+                if not node_present:
+                    missing.append(f"node (looked for {node_bin!r})")
+                if not shim_present:
+                    missing.append(f"engine shim ({shim_path})")
+                if not dist_present:
+                    missing.append("built fork dist (REASONIX_ENGINE_DIST / vendor/reasonix-engine/dist)")
                 notes.append(
-                    "SELF-HEAL: Reasonix CLI not found in PATH "
-                    f"(looked for {os.getenv('REASONIX_BIN', 'reasonix')!r}). "
-                    "Reasonix worker lanes will fail. Action: install and log in to "
-                    "the Reasonix CLI (`reasonix login`), then restart claude-reasonix."
+                    "SELF-HEAL: Reasonix in-process engine not ready — missing "
+                    + "; ".join(missing)
+                    + ". Reasonix worker lanes will fail. Action: install node and "
+                    "(re)run install.sh to build/bundle the fork engine, then restart "
+                    "claude-reasonix."
                 )
     except Exception as exc:  # noqa: BLE001 - fail open, never block the workflow
         report["error"] = repr(exc)

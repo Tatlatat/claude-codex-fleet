@@ -237,30 +237,52 @@ def test_wrapper_emit_is_flavor_agnostic():
 
 
 def test_reasonix_cli_check_in_reasonix_flavor():
-    """preflight() must populate checks['reasonix_cli'] when CLAUDE_REASONIX_FLAVOR=reasonix.
+    """preflight() must populate checks['engine'] (and the back-compat reasonix_cli
+    alias) when CLAUDE_REASONIX_FLAVOR=reasonix.
 
-    Part 1: binary absent  -> present is False, ctx contains a reasonix self-heal note.
-    Part 2: binary present -> present is True.
+    The engine is the in-process fork shim now: the precondition is node + the
+    engine shim + a built fork dist. The shim (engine/run-lane.mjs) ships in the
+    repo, so we toggle the node-binary presence to drive present True/False.
+
+    Part 1: node binary absent  -> present is False, ctx contains a self-heal note.
+    Part 2: node binary present -> present is True.
     """
     os.environ["CLAUDE_REASONIX_FLAVOR"] = "reasonix"
-    os.environ["REASONIX_BIN"] = "/nonexistent/reasonix-xyz"
+    saved_node = os.environ.get("CLAUDE_REASONIX_NODE_BIN")
+    saved_dist = os.environ.get("REASONIX_ENGINE_DIST")
+    # Make the dist check pass without a real build: point at any existing file
+    # (the shim itself), so the check isolates on the node-binary toggle.
+    os.environ["REASONIX_ENGINE_DIST"] = str(ROOT / "engine" / "run-lane.mjs")
     try:
+        os.environ["CLAUDE_REASONIX_NODE_BIN"] = "/nonexistent/node-xyz"
         _, ctx, rep = sh.preflight(SCRIPT, "native")
-        expect("reasonix_cli" in rep["checks"], "reasonix_cli key missing from checks")
+        expect("engine" in rep["checks"], "engine key missing from checks")
+        expect("reasonix_cli" in rep["checks"], "back-compat reasonix_cli alias missing from checks")
+        expect(rep["checks"]["engine"]["present"] is False,
+               f"expected present=False for nonexistent node, got: {rep['checks']['engine']}")
         expect(rep["checks"]["reasonix_cli"]["present"] is False,
-               f"expected present=False for nonexistent binary, got: {rep['checks']['reasonix_cli']}")
+               f"alias present must mirror engine, got: {rep['checks']['reasonix_cli']}")
         expect("reasonix" in ctx.lower(),
                f"expected reasonix self-heal note in ctx; got: {ctx!r}")
 
-        # Part 2: use 'sh' (POSIX shell) as a guaranteed-present binary.
-        os.environ["REASONIX_BIN"] = "sh"
+        # Part 2: 'sh' is a guaranteed-present binary used as a stand-in for node.
+        os.environ["CLAUDE_REASONIX_NODE_BIN"] = "sh"
         _, _ctx2, rep2 = sh.preflight(SCRIPT, "native")
-        expect("reasonix_cli" in rep2["checks"], "reasonix_cli key missing from checks (present case)")
+        expect("engine" in rep2["checks"], "engine key missing from checks (present case)")
+        expect(rep2["checks"]["engine"]["present"] is True,
+               f"expected present=True for 'sh' (node stand-in) + shim + dist, got: {rep2['checks']['engine']}")
         expect(rep2["checks"]["reasonix_cli"]["present"] is True,
-               f"expected present=True for 'sh' binary, got: {rep2['checks']['reasonix_cli']}")
+               f"alias present must mirror engine (present case), got: {rep2['checks']['reasonix_cli']}")
     finally:
         os.environ.pop("CLAUDE_REASONIX_FLAVOR", None)
-        os.environ.pop("REASONIX_BIN", None)
+        if saved_node is None:
+            os.environ.pop("CLAUDE_REASONIX_NODE_BIN", None)
+        else:
+            os.environ["CLAUDE_REASONIX_NODE_BIN"] = saved_node
+        if saved_dist is None:
+            os.environ.pop("REASONIX_ENGINE_DIST", None)
+        else:
+            os.environ["REASONIX_ENGINE_DIST"] = saved_dist
 
 
 def main() -> int:

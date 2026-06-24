@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""The reasonix-fleet MCP must run REASONIX (not the legacy CLI) when CLAUDE_REASONIX_FLAVOR=reasonix.
+"""The reasonix-fleet MCP must run the REASONIX fork engine (not the legacy CLI)
+when CLAUDE_REASONIX_FLAVOR=reasonix.
 
 Root cause this guards: in a claude-reasonix session, single subagents are pushed
-to the reasonix_fleet MCP by only-reasonix-fleet.py, but the MCP ran `reasonix exec` = old Reasonix CLI,
-so "every agent is reasonix" was false. The MCP must dispatch through reasonix acp
-when the session flavor is reasonix.
+to the reasonix_fleet MCP by only-reasonix-fleet.py; the MCP must dispatch through
+the gateway's reasonix engine path (now the in-process fork-engine shim), not a
+legacy subprocess.
 
-The test drives the MCP's per-task runner against a fake reasonix binary that
-speaks ACP and writes a transcript with a cost record, and asserts the task result
-came from reasonix (cost captured), not from a legacy subprocess.
+The MCP's per-task runner dispatches through the gateway's run_reasonix_acp, which
+now spawns the one-shot fork-engine shim (`node engine/run-lane.mjs`). This test
+drives that shim in REASONIX_ENGINE_MOCK mode (deterministic text/usage, no
+DeepSeek) and asserts the task result came from the reasonix engine (cost +
+text surfaced), exactly as before — only the engine handle changed.
 """
 from __future__ import annotations
 
@@ -16,7 +19,6 @@ import asyncio
 import importlib.util
 import os
 from pathlib import Path
-import stat
 import sys
 import tempfile
 
@@ -31,44 +33,20 @@ def expect(cond, msg):
         raise SystemExit(f"FAIL: {msg}")
 
 
-# Fake reasonix acp binary: speaks the ACP handshake, streams "OK", writes a
-# transcript with cost, returns stopReason.
-FAKE_REASONIX = r'''#!/usr/bin/env python3
-import sys, json
-tr=None
-a=sys.argv
-for i,x in enumerate(a):
-    if x=="--transcript" and i+1<len(a): tr=a[i+1]
-def w(o): sys.stdout.write(json.dumps(o)+"\n"); sys.stdout.flush()
-for line in sys.stdin:
-    line=line.strip()
-    if not line: continue
-    m=json.loads(line); mid=m.get("id"); method=m.get("method")
-    if method=="initialize":
-        w({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":1,"agentInfo":{"name":"reasonix"}}})
-    elif method=="session/new":
-        w({"jsonrpc":"2.0","id":mid,"result":{"sessionId":"sess_test"}})
-    elif method=="session/prompt":
-        w({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_test","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"REASONIX_RAN"}}}})
-        if tr:
-            with open(tr,"a") as fh:
-                fh.write(json.dumps({"role":"assistant_final","content":"REASONIX_RAN","cost":0.000222,"usage":{"prompt_tokens":50,"completion_tokens":3,"prompt_cache_hit_tokens":45,"prompt_cache_miss_tokens":5}})+"\n")
-        w({"jsonrpc":"2.0","id":mid,"result":{"stopReason":"end_turn","transcriptPath":tr}})
-'''
-
-
-def make_fake_reasonix():
-    d = tempfile.mkdtemp()
-    p = Path(d) / "reasonix"
-    p.write_text(FAKE_REASONIX, encoding="utf-8")
-    p.chmod(p.stat().st_mode | stat.S_IEXEC)
-    return str(p)
-
-
 def test_mcp_runs_reasonix_in_reasonix_flavor():
-    fake = make_fake_reasonix()
     os.environ["CLAUDE_REASONIX_FLAVOR"] = "reasonix"
-    os.environ["REASONIX_BIN"] = fake
+    # Drive the fork-engine shim in mock mode with injected values.
+    mock_env = {
+        "REASONIX_ENGINE_MOCK": "1",
+        "REASONIX_ENGINE_MOCK_TEXT": "REASONIX_RAN",
+        "REASONIX_ENGINE_MOCK_COST": "0.000222",
+        "REASONIX_ENGINE_MOCK_PROMPT_TOKENS": "50",
+        "REASONIX_ENGINE_MOCK_COMPLETION_TOKENS": "3",
+        "REASONIX_ENGINE_MOCK_CACHE_HIT_TOKENS": "45",
+        "REASONIX_ENGINE_MOCK_CACHE_MISS_TOKENS": "5",
+    }
+    saved = {k: os.environ.get(k) for k in mock_env}
+    os.environ.update(mock_env)
     try:
         spec.loader.exec_module(mcp)  # load with reasonix env set
         cwd = tempfile.mkdtemp()
@@ -77,12 +55,16 @@ def test_mcp_runs_reasonix_in_reasonix_flavor():
         expect(result.get("ok") is True, f"task should succeed: {result}")
         out = str(result.get("output") or result.get("stdout") or "")
         expect("REASONIX_RAN" in out, f"output must come from reasonix engine: {result}")
-        # cost from reasonix must be surfaced
+        # cost from the reasonix engine must be surfaced
         expect(result.get("reasonix_cost_usd") == 0.000222,
                f"reasonix cost must be captured: {result}")
     finally:
         os.environ.pop("CLAUDE_REASONIX_FLAVOR", None)
-        os.environ.pop("REASONIX_BIN", None)
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def main() -> int:

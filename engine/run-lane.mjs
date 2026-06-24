@@ -85,7 +85,8 @@ try {
   fail(`run-lane: cannot load engine dist (${dist}): ${e.message}`, 4);
 }
 
-const { DeepSeekClient, ImmutablePrefix, CacheFirstLoop, buildCodeToolset } = lib;
+const { DeepSeekClient, ImmutablePrefix, CacheFirstLoop, buildCodeToolset, loadEndpoint } =
+  lib;
 for (const [name, ref] of Object.entries({
   DeepSeekClient,
   ImmutablePrefix,
@@ -97,6 +98,22 @@ for (const [name, ref] of Object.entries({
   }
 }
 
+// Auth resolution: prefer explicit env (DEEPSEEK_API_KEY/DEEPSEEK_BASE_URL the
+// gateway forwards), else fall back to the fork's own config resolution
+// (loadEndpoint reads ~/.reasonix/config.json) so the in-process engine
+// authenticates EXACTLY like the old `reasonix acp` path did — no separate
+// DEEPSEEK_API_KEY required on a logged-in machine.
+let endpoint = { apiKey: undefined, baseUrl: undefined };
+if (typeof loadEndpoint === "function") {
+  try {
+    endpoint = loadEndpoint() || endpoint;
+  } catch {
+    /* fall through to env-only */
+  }
+}
+const apiKey = process.env.DEEPSEEK_API_KEY || endpoint.apiKey;
+const baseUrl = process.env.DEEPSEEK_BASE_URL || endpoint.baseUrl;
+
 const rootDir = req.rootDir || process.cwd();
 
 let text = "";
@@ -104,10 +121,7 @@ let stats = null;
 try {
   // Full code toolset (file/shell/semantic-search) so lanes match the old acp.
   const toolset = await buildCodeToolset({ rootDir });
-  const client = new DeepSeekClient({
-    apiKey: process.env.DEEPSEEK_API_KEY,
-    baseUrl: process.env.DEEPSEEK_BASE_URL,
-  });
+  const client = new DeepSeekClient({ apiKey, baseUrl });
   const prefix = new ImmutablePrefix({
     system: String(req.system ?? ""),
     toolSpecs: toolset.tools.specs(),

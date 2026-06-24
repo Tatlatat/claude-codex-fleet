@@ -1252,276 +1252,150 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
             "input_tokens": max(1, len(prompt) // 4), "output_tokens": max(1, len(_mock_text) // 4),
             "cache_pct": 0.0, "reasonix_cost_usd": 0.0, "reasonix_cache_pct": 0.0,
         }
-    import queue as _queue
-    reasonix_bin = str(config.get("reasonix_bin") or env_first("REASONIX_BIN", default="reasonix"))
-    # reasonix is a Node CLI whose shebang is `env node`. If the gateway was
-    # launched with a PATH that lacks the node directory (the fnm multishell dir
-    # that also holds the reasonix bin), the spawn dies with
-    # "env: node: No such file or directory" and reasonix produces no output —
-    # every workflow lane then returns empty text. Prepend the reasonix bin's
-    # own directory (which contains node) to the child PATH so `env node`
-    # resolves regardless of how the gateway itself was started.
-    reasonix_env = dict(os.environ)
-    # Session isolation (ROOT CAUSE of erratic fan-out cache): stock reasonix acp
-    # persists each spawn's session under a MINUTE-granular name
-    # (`acp-${timestampSuffix()}`, 12-char ISO slice) and the CacheFirstLoop ctor
-    # loadSessionMessages() RESUMES any same-name session. So every lane spawning in
-    # the same wall-clock minute inherits all prior same-minute lanes' full
-    # conversations as prior context — measured: in_tok inflates ~+10829 tok/lane,
-    # cache swings 60-94% by collision. Default ephemeral sessions (session:null, no
-    # load/append) so each stateless fan-out lane is fully isolated. Requires the
-    # one-line dist patch that honors REASONIX_ACP_EPHEMERAL_SESSION; kill-switch:
-    # set CLAUDE_REASONIX_GATEWAY_REASONIX_EPHEMERAL=0 to restore stock behavior.
-    if env_first("CLAUDE_REASONIX_GATEWAY_REASONIX_EPHEMERAL", "CLAUDE_CODEX_GATEWAY_REASONIX_EPHEMERAL", default="1") not in {"0", "false", "no", "off"}:
-        reasonix_env.setdefault("REASONIX_ACP_EPHEMERAL_SESSION", "1")
-    _bin_dir = os.path.dirname(os.path.abspath(reasonix_bin)) if os.path.sep in reasonix_bin else ""
-    if _bin_dir and os.path.exists(os.path.join(_bin_dir, "node")):
-        _cur_path = reasonix_env.get("PATH", "")
-        if _bin_dir not in _cur_path.split(os.pathsep):
-            reasonix_env["PATH"] = _bin_dir + (os.pathsep + _cur_path if _cur_path else "")
+    # ENGINE SEAM: run ONE lane through the in-process owner's-fork engine shim
+    # (`node engine/run-lane.mjs`) instead of spawning upstream `reasonix acp`.
+    # The shim imports the built fork dist, constructs DeepSeekClient +
+    # ImmutablePrefix + CacheFirstLoop + buildCodeToolset, drives loop.step() with
+    # stream:true + session:undefined (ephemeral), and prints ONE JSON line:
+    #   {text, usage:{prompt_tokens, completion_tokens,
+    #                 prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+    #                 cache_hit_ratio}, cost_usd}
+    # We re-map THAT to the gateway's internal usage dict (input_tokens /
+    # output_tokens / cache_pct / reasonix_cost_usd / reasonix_cache_pct), which
+    # downstream cost/cache logging + the realworld-bench cache metric consume.
+    # The shim is JUST the lane producer — the gateway's streaming/heartbeat/
+    # prime-gate/keepalive machinery (below + in send_sse_response_lazy) is
+    # unchanged. A one-shot subprocess per lane is behaviourally identical to the
+    # old per-lane acp spawn; DeepSeek's cache hits come from its server-side
+    # prefix cache (same prefix bytes), not from any in-memory engine state.
+    #
+    # Resolve the install home the same way the gateway resolves its own dir (the
+    # gateway lives at <INSTALL_HOME>/reasonix-native-gateway.py), so the shim is
+    # at <INSTALL_HOME>/engine/run-lane.mjs.
+    install_home = env_first(
+        "CLAUDE_REASONIX_FLEET_INSTALL_HOME", "CLAUDE_CODEX_FLEET_INSTALL_HOME",
+        default=os.path.dirname(os.path.abspath(__file__)),
+    )
+    shim_path = os.path.join(install_home, "engine", "run-lane.mjs")
+    node_bin = env_first("CLAUDE_REASONIX_NODE_BIN", "NODE_BIN", default="node")
     model = str(config.get("target_model") or "deepseek-v4-flash")
     effort = env_first("CLAUDE_REASONIX_REASONIX_EFFORT", "CLAUDE_CODEX_REASONIX_EFFORT", default="high")
     budget = env_first("CLAUDE_REASONIX_REASONIX_BUDGET", "CLAUDE_CODEX_REASONIX_BUDGET", default="0.05")
     timeout = float(env_first("CLAUDE_REASONIX_GATEWAY_TIMEOUT", "CLAUDE_CODEX_GATEWAY_CODEX_TIMEOUT", "REASONIX_FLEET_TIMEOUT_SECONDS", default="600"))
     cwd = env_first("CLAUDE_REASONIX_GATEWAY_CWD", "CLAUDE_CODEX_GATEWAY_CODEX_CWD", default=os.getcwd())
     max_attempts = max(1, env_int("CLAUDE_REASONIX_GATEWAY_MAX_ATTEMPTS", "CLAUDE_CODEX_GATEWAY_CODEX_MAX_ATTEMPTS", default=3))
+    max_iter = max(1, env_int("CLAUDE_REASONIX_GATEWAY_MAX_ITER_PER_TURN", "CLAUDE_CODEX_GATEWAY_MAX_ITER_PER_TURN", default=50))
     semaphore = reasonix_cli_semaphore()
+    # The lane system prompt: the gateway prepends the role/system text into the
+    # prompt today (openai_messages_to_prompt builds a single prompt string), so
+    # the shim's `system` is empty and the full instruction rides in `prompt` —
+    # preserving the exact prefix bytes DeepSeek caches. An explicit override is
+    # available for callers that want to split system out.
+    system_text = str(config.get("system") or os.getenv("CLAUDE_REASONIX_LANE_SYSTEM", ""))
+
+    # The shim is `node`; if the gateway was launched with a stripped PATH that
+    # lacks the node dir, propagate the reasonix-bin dir (which historically holds
+    # node) so `node` resolves regardless of how the gateway was started. Honor
+    # REASONIX_ENGINE_DIST + DeepSeek auth via the child env.
+    shim_env = dict(os.environ)
+    _reasonix_bin = env_first("REASONIX_BIN", default="")
+    _bin_dir = os.path.dirname(os.path.abspath(_reasonix_bin)) if (_reasonix_bin and os.path.sep in _reasonix_bin) else ""
+    if _bin_dir and os.path.exists(os.path.join(_bin_dir, "node")):
+        _cur_path = shim_env.get("PATH", "")
+        if _bin_dir not in _cur_path.split(os.pathsep):
+            shim_env["PATH"] = _bin_dir + (os.pathsep + _cur_path if _cur_path else "")
+    # Resolve the engine dist (the built fork). Default to the bundled vendor copy
+    # next to the install home if not explicitly set; the shim has its own
+    # fallback too, but setting it here keeps the resolution observable.
+    if not shim_env.get("REASONIX_ENGINE_DIST"):
+        _vendored = os.path.join(install_home, "vendor", "reasonix-engine", "dist", "index.js")
+        if os.path.exists(_vendored):
+            shim_env["REASONIX_ENGINE_DIST"] = _vendored
 
     def _attempt() -> tuple[str, JSON]:
-        # acp writes per-turn usage+cost to the --transcript JSONL; that is the
-        # ONLY place the real cost/token counts are available (acp mode does NOT
-        # print a cost line on stderr the way `reasonix run` does). Use a fresh
-        # temp transcript per attempt and read it back after the run.
-        transcript_fd, transcript_path = tempfile.mkstemp(prefix="reasonix-acp-", suffix=".jsonl")
-        os.close(transcript_fd)
-        command = [
-            reasonix_bin, "acp",
-            "--dir", cwd,
-            "--yolo",
-            "-m", model,
-            "--effort", effort,
-            "--budget", budget,
-            "--transcript", transcript_path,
-        ]
+        request = {
+            "prompt": prompt,
+            "system": system_text,
+            "rootDir": cwd,
+            "model": model,
+            "maxIterPerTurn": max_iter,
+            # carried for parity/observability; the shim ignores unknown fields.
+            "effort": effort,
+            "budget": budget,
+        }
         try:
             proc = subprocess.Popen(
-                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, text=True, bufsize=1, cwd=cwd,
-                env=reasonix_env,
+                [node_bin, shim_path],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, cwd=cwd, env=shim_env,
             )
         except OSError as exc:
-            try:
-                os.unlink(transcript_path)
-            except Exception:
-                pass
-            raise GatewayError(502, "reasonix_acp_error", f"failed to start reasonix acp: {exc}")
-        out_q: _queue.Queue = _queue.Queue()
-        text_parts: list[str] = []
-        session_id = {"v": None}
-        prompt_done = {"v": False}
-        stop_reason = {"v": None}
-        captured: dict = {"v": None}
-
-        def _read_transcript_cost(path: str) -> dict | None:
-            # Poll the transcript for the assistant_final record (cost + usage),
-            # which reasonix flushes shortly AFTER stopReason. Returns a dict of
-            # {cost, claude_equiv, in_tok, out_tok, cache} or None if not yet present.
-            deadline = _time.monotonic() + 2.0
-            while True:
-                cost = claude_equiv = cache = in_tok = out_tok = None
-                try:
-                    with open(path, "r", encoding="utf-8") as fh:
-                        for line in fh:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                rec = json.loads(line)
-                            except Exception:
-                                continue
-                            if isinstance(rec.get("cost"), (int, float)):
-                                cost = (cost or 0.0) + float(rec["cost"])
-                            if isinstance(rec.get("claudeEquivUsd"), (int, float)):
-                                claude_equiv = (claude_equiv or 0.0) + float(rec["claudeEquivUsd"])
-                            u = rec.get("usage")
-                            if isinstance(u, dict):
-                                if isinstance(u.get("prompt_tokens"), int):
-                                    in_tok = u["prompt_tokens"]
-                                if isinstance(u.get("completion_tokens"), int):
-                                    out_tok = u["completion_tokens"]
-                                hit = u.get("prompt_cache_hit_tokens")
-                                miss = u.get("prompt_cache_miss_tokens")
-                                if isinstance(hit, int) and isinstance(miss, int) and (hit + miss) > 0:
-                                    cache = round(100.0 * hit / (hit + miss), 1)
-                except Exception:
-                    pass
-                if cost is not None or _time.monotonic() > deadline:
-                    return {"cost": cost, "claude_equiv": claude_equiv,
-                            "in_tok": in_tok, "out_tok": out_tok, "cache": cache}
-                _time.sleep(0.1)
-
-        def send(obj: JSON) -> None:
-            assert proc.stdin is not None
-            proc.stdin.write(json.dumps(obj) + "\n")
-            proc.stdin.flush()
-
-        def reader() -> None:
-            assert proc.stdout is not None
-            for line in proc.stdout:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    msg = json.loads(line)
-                except Exception:
-                    continue
-                out_q.put(msg)
-            out_q.put({"__eof__": True})
-
-        threading.Thread(target=reader, daemon=True).start()
-        send({"jsonrpc": "2.0", "id": 1, "method": "initialize",
-              "params": {"protocolVersion": 1, "clientCapabilities": {}}})
-        send({"jsonrpc": "2.0", "id": 2, "method": "session/new",
-              "params": {"cwd": cwd, "mcpServers": []}})
-
-        import time as _time
-        # FIX 1: bound the handshake phase so a wedged process can't hold a
-        # semaphore slot forever.  Resets to the full timeout once the
-        # session/prompt (id=3) has been sent.
-        deadline = _time.monotonic() + min(timeout, 60.0)
+            raise GatewayError(502, "reasonix_acp_error", f"failed to start engine shim: {exc}")
         try:
-            while True:
-                try:
-                    msg = out_q.get(timeout=1.0)
-                except Exception:
-                    if _time.monotonic() > deadline:
-                        proc.kill()
-                        raise GatewayError(504, "reasonix_timeout", f"reasonix acp timed out after {timeout:g}s")
-                    continue
-                if msg.get("__eof__"):
-                    break
-                if msg.get("id") == 2 and "result" in msg:
-                    session_id["v"] = msg["result"].get("sessionId")
-                    if not session_id["v"]:
-                        proc.kill()
-                        raise GatewayError(502, "reasonix_acp_error", "session/new returned no sessionId")
-                    send({"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
-                          "params": {"sessionId": session_id["v"],
-                                     "prompt": [{"type": "text", "text": prompt}]}})
-                    # Reset deadline for the full work phase now that handshake is done.
-                    deadline = _time.monotonic() + timeout
-                elif msg.get("method") == "session/update":
-                    upd = (msg.get("params") or {}).get("update") or {}
-                    if upd.get("sessionUpdate") == "agent_message_chunk":
-                        content = upd.get("content") or {}
-                        if isinstance(content, dict) and content.get("type") == "text":
-                            text_parts.append(content.get("text", ""))
-                elif msg.get("id") == 3 and "result" in msg:
-                    stop_reason["v"] = msg["result"].get("stopReason")
-                    prompt_done["v"] = True
-                    # Poll the transcript for the assistant_final cost record WHILE
-                    # the process is still alive — reasonix writes that record a
-                    # beat after stopReason, and reaping the process first (in the
-                    # finally below) loses it. captured["v"] holds the parsed result.
-                    captured["v"] = _read_transcript_cost(transcript_path)
-                    break
-                elif msg.get("id") == 3 and "error" in msg:
-                    proc.kill()
-                    raise GatewayError(502, "reasonix_acp_error", msg["error"].get("message", "session/prompt error"))
-
-        finally:
-            # Deterministic reap + pipe close on every exit path. Close OUR stdin
-            # first (signals EOF so reasonix can finish flushing its transcript and
-            # exit on its own), then give it a short grace period to exit cleanly
-            # BEFORE terminating. Terminating immediately killed reasonix mid-flush,
-            # which lost the cost/usage transcript record ~2/3 of the time.
+            stdout_text, stderr_text = proc.communicate(
+                input=json.dumps(request) + "\n", timeout=timeout)
+        except subprocess.TimeoutExpired:
             try:
-                if proc.stdin:
-                    proc.stdin.close()
+                proc.kill()
             except Exception:
                 pass
             try:
-                proc.wait(timeout=2)  # graceful: let it flush transcript + exit
+                proc.communicate(timeout=2)
             except Exception:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                try:
-                    proc.wait(timeout=3)
-                except Exception:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    try:
-                        proc.wait(timeout=2)
-                    except Exception:
-                        pass
-            # Read stderr now that the process is dead (won't block).
-            # On error/exception paths this is a best-effort capture; the
-            # caller receives the GatewayError and we discard stderr_text.
-            try:
-                _stderr_capture = proc.stderr.read() if proc.stderr else ""
-            except Exception:
-                _stderr_capture = ""
-            # Close all Python-side pipe fds on every exit path.
-            for _stream in (proc.stdin, proc.stdout, proc.stderr):
-                try:
-                    if _stream:
-                        _stream.close()
-                except Exception:
-                    pass
+                pass
+            raise GatewayError(504, "reasonix_timeout", f"engine shim timed out after {timeout:g}s")
+        if proc.returncode != 0:
+            detail = (stderr_text or "").strip()[:500] or f"engine shim exited {proc.returncode}"
+            raise GatewayError(502, "reasonix_acp_error", f"engine shim failed: {detail}")
 
-        # _stderr_capture is kept only for error diagnostics; cost/usage come
-        # from the transcript JSONL below.
-        _ = _stderr_capture
-
-        # Cost/usage were parsed from the transcript WHILE the process was still
-        # alive (captured["v"]), because reasonix flushes the assistant_final cost
-        # record a beat after stopReason and the reap above would otherwise lose it.
-        # Fall back to a fresh read if that path didn't run (e.g. error exit).
-        parsed = captured["v"]
-        if parsed is None:
-            parsed = _read_transcript_cost(transcript_path) or {}
-        cost = parsed.get("cost")
-        claude_equiv = parsed.get("claude_equiv")
-        cache = parsed.get("cache")
-        in_tok = parsed.get("in_tok")
-        out_tok = parsed.get("out_tok")
+        # The shim prints ONE JSON line on stdout. Parse the last non-empty line.
+        out_line = ""
+        for line in (stdout_text or "").splitlines():
+            if line.strip():
+                out_line = line.strip()
+        if not out_line:
+            raise GatewayError(502, "reasonix_acp_error", "engine shim produced no output")
         try:
-            os.unlink(transcript_path)
-        except Exception:
-            pass
+            parsed = json.loads(out_line)
+        except Exception as exc:
+            raise GatewayError(502, "reasonix_acp_error", f"engine shim emitted non-JSON: {exc}")
 
-        text = "".join(text_parts)
+        text = str(parsed.get("text") or "")
+        su = parsed.get("usage") or {}
+        in_tok = su.get("prompt_tokens")
+        out_tok = su.get("completion_tokens")
+        hit = su.get("prompt_cache_hit_tokens")
+        miss = su.get("prompt_cache_miss_tokens")
+        ratio = su.get("cache_hit_ratio")
+        cost = parsed.get("cost_usd")
+        # cache percent: prefer the shim's ratio (0..1 -> 0..100); fall back to
+        # hit/(hit+miss) so the metric is non-null whenever token counts exist.
+        cache = None
+        if isinstance(ratio, (int, float)):
+            cache = round(100.0 * float(ratio), 1)
+        elif isinstance(hit, (int, float)) and isinstance(miss, (int, float)) and (hit + miss) > 0:
+            cache = round(100.0 * float(hit) / float(hit + miss), 1)
+
         usage = {
-            "input_tokens": in_tok if in_tok is not None
+            "input_tokens": int(in_tok) if isinstance(in_tok, (int, float))
             else estimate_tokens({"messages": [{"role": "user", "content": prompt}]}),
-            "output_tokens": out_tok if out_tok is not None else max(1, len(text) // 4),
+            "output_tokens": int(out_tok) if isinstance(out_tok, (int, float)) else max(1, len(text) // 4),
+            # cache_pct is the ledger key (append_reasonix_cost reads reasonix_cache_pct
+            # into a row's cache_pct); set both so cost/cache logging + realworld-bench
+            # keep working.
+            "cache_pct": cache,
             "reasonix_cost_usd": cost,
             "reasonix_cache_pct": cache,
-            "reasonix_claude_equiv_usd": claude_equiv,
+            "reasonix_claude_equiv_usd": None,
         }
         # Prefix-cache diagnostics (opt-in via CLAUDE_REASONIX_GATEWAY_PREFIX_TRACE).
-        # Logs a rolling sequence of (hash of prompt's first 4k chars, hash of
-        # first 32k, full length, cache%) per lane so we can tell post-hoc whether
-        # low-cache lanes share a long common prefix with earlier lanes (a
-        # prompt-ORDER problem we can fix by stabilising the prefix) or have a
-        # genuinely novel prefix (unavoidable cold start). Append-only JSONL; no
-        # behavior change. The prompt text itself is NOT logged, only hashes.
+        # Unchanged from the acp path — hashes of the prompt prefix + this lane's
+        # cache%, append-only JSONL, prompt text never logged.
         if os.getenv("CLAUDE_REASONIX_GATEWAY_PREFIX_TRACE", os.getenv("CLAUDE_CODEX_GATEWAY_PREFIX_TRACE", "")).lower() in {"1", "true", "yes", "on"}:
             try:
                 import hashlib
                 pfx4 = hashlib.sha1(prompt[:4096].encode("utf-8", "ignore")).hexdigest()[:12]
                 pfx32 = hashlib.sha1(prompt[:32768].encode("utf-8", "ignore")).hexdigest()[:12]
-                # Per-4k-chunk hashes so we can find WHERE two same-family lanes
-                # diverge (the chunk index where their hash sequences first differ),
-                # and a short text sample of each chunk's HEAD so we can classify the
-                # divergent region as source-code (e.g. starts with "def "/"import "/
-                # "class "/file-path lines — not shareable) vs an instruction/template
-                # block (shareable, just ordered late). Samples are 80 chars, head of
-                # the chunk only — enough to classify, not to leak the full prompt.
                 chunks = [prompt[i:i + 4096] for i in range(0, min(len(prompt), 131072), 4096)]
                 chunk_hashes = [hashlib.sha1(c.encode("utf-8", "ignore")).hexdigest()[:10] for c in chunks]
                 chunk_samples = [c[:80] for c in chunks]
@@ -1531,7 +1405,7 @@ def run_reasonix_acp(prompt: str, config: JSON) -> tuple[str, JSON]:
                     "prefix32k": pfx32,
                     "prompt_len": len(prompt),
                     "cache_pct": cache,
-                    "in_tok": in_tok,
+                    "in_tok": usage["input_tokens"],
                     "chunk_hashes": chunk_hashes,
                     "chunk_samples": chunk_samples,
                 }
