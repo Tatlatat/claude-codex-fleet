@@ -119,14 +119,14 @@ Cost split đo thật (cache 96.3%): **output 42.3%, miss 38.1%, hit 19.6%** →
 
 ---
 
-## PHẦN 4 — OPEN QUESTIONS (owner quyết)
-1. **F default flag:** ship default 0 (measure-then-promote)? (design F đề xuất 1 — nên 0 cho experiment).
-2. **DeepSeek max_tokens mid-block:** cap có cắt giữa SEARCH/REPLACE (làm edit_file fail) không? Cần 1 test lane trước khi bật output cap cho edit lane. Owner OK chạy probe?
-3. **Edit-lane P95 output:** đọc P95 từ ledger → set EDIT budget = ceil(P95×1.2)?
-4. **Summary schema A:** fixed `{findings,files_read,flag}` (prefix-stable) vs controller-specified (linh hoạt, cần metadata channel gateway chưa có)?
-5. **Embedding provider D:** Ollama + nomic-embed-text có chưa, hay openai-compat endpoint? (gate D buildable hay không).
-6. **Fork rebuild/re-vendor (B+D):** có build script chưa, owner OK re-vendor?
-7. **E prediction floor:** grep-symbol fallback default-on (recall cao, dead-token risk) hay sau `PREFIX_PLANNER=1`?
-8. **G cold-order:** fixed (baseline first, reproducible) vs randomized (sạch thống kê)?
-9. **best_combo (G):** auto-union flag default-ON (chống drift) vs hand-list?
-10. **C persistence:** in-memory (cold restart) vs persist `runtime/read-summary-cache.json` (warm restart, +disk I/O)?
+## PHẦN 4 — OWNER DECISIONS (đã chốt 2026-06-24)
+1. **F default flag:** **default 0** (measure-then-promote). Hướng tới bật trong tương lai NHƯNG bắt buộc đo qua harness trước khi promote.
+2. **DeepSeek max_tokens mid-block:** **OK chạy probe** — gửi 1 edit lane với max_tokens thấp có chủ ý, kiểm xem cap có cắt giữa SEARCH/REPLACE làm edit_file fail không, TRƯỚC khi bật output cap cho edit lane.
+3. **Edit-lane budget:** **đọc P95 thật từ ledger → EDIT budget = ceil(P95×1.2)** (data-driven, không hardcode 3500).
+4. **Summary schema A:** **fixed `{findings, files_read, flag}`** (prefix-stable, không cần metadata channel mới).
+5. **Embedding provider D:** owner xác nhận **đã có embedding model** (từ dự án semantic search trước). D buildable; verify provider cụ thể khi tới lượt D (#6).
+6. **Fork rebuild/re-vendor (B+D):** **OK re-vendor**, batch B+D chung 1 rebuild (dùng quy trình `build:engine` từ Sub-project 2). Lever fleet-only (F/A/C) làm trước, B/D (cần rebuild) sau.
+7. **E prediction:** **ship advisory mode trước** (zero prefix risk, đo precision), chỉ promote sang inject mode nếu precision đủ cao. Grep-symbol fallback KHÔNG default-on.
+8. **G cold-order:** **fixed order + warm-up lane chung trước mỗi config** (cache "ấm" như nhau → công bằng + tái lập). Như cách realworld-bench warm-up.
+9. **best_combo (G):** **auto = union các flag default-ON** (chống drift, tự cập nhật khi thêm lever).
+10. **C persistence:** **persist ra đĩa** `runtime/read-summary-cache.json` (ấm lại sau gateway restart — hệ thống này hay restart gateway), mtime-freshness khi load.
