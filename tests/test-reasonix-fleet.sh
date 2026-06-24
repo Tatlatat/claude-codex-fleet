@@ -41,7 +41,7 @@ done
 # Slim-down Task 3: no gpt-5.4 default, no dead codex-exec fields.
 grep -q "gpt-5.4" "$LAUNCHER" && fail "launcher must not default to gpt-5.4"
 grep -q "gpt-5.4" "$MCP_SERVER" && fail "MCP must not default to gpt-5.4"
-for f in service_tier web_search approval_policy; do
+for f in service_tier web_search sandbox approval_policy; do
   grep -q "\"$f\"" "$MCP_SERVER" && fail "MCP still carries codex-exec field: $f"
 done
 
