@@ -2101,7 +2101,12 @@ def run_reasonix_acp(prompt: str, config: JSON, max_output_tokens: int | None = 
             "budget": budget,
         }
         # cap_override lets the empty-on-truncation retry re-run at a higher cap.
-        _cap = cap_override if cap_override is not None else max_output_tokens
+        # Sentinel: cap_override==0 means EXPLICITLY uncapped (omit maxOutputTokens);
+        # None means "use the lane's original cap".
+        if cap_override == 0:
+            _cap = None
+        else:
+            _cap = cap_override if cap_override is not None else max_output_tokens
         if _cap is not None:
             request["maxOutputTokens"] = _cap
         try:
@@ -2290,19 +2295,32 @@ def run_reasonix_acp(prompt: str, config: JSON, max_output_tokens: int | None = 
             # Truncation recovery (Lever A): an A-capped read lane can spend its small
             # cap on tool-calls/reasoning/outline and get truncated before emitting the
             # answer -> empty text. A SAME-cap retry won't help (the budget is the
-            # cause); re-run ONCE at a higher cap so the model can finish. Distinct from
-            # the generic same-cap empty-retry below; runs even mid-burst (force) because
-            # a lost summary is worse than one extra-budget lane, and recovers 2/2
-            # measured. Only when the lane was actually capped (max_output_tokens set).
-            if (not str(result[0]).strip()):
-                _bigger = retry_cap_for_empty(max_output_tokens, True, retry_empty_force)
-                if _bigger is not None:
+            # cause); re-run at a PROGRESSIVELY higher cap until the model can finish.
+            # One 2x bump recovers most lanes, but the heaviest (a "walk through every
+            # function" on a 134KB file) need more; escalate 2x, 4x, ... up to a final
+            # UNCAPPED attempt (measured: no-cap = 0% hollow). Runs even mid-burst
+            # (force) because a lost summary is worse than a few extra-budget lanes.
+            # Only when the lane was actually capped (max_output_tokens set).
+            if (not str(result[0]).strip()) and retry_empty_force and max_output_tokens is not None:
+                _max_escalations = env_int(
+                    "CLAUDE_REASONIX_GATEWAY_READ_RETRY_MAX_ESCALATIONS",
+                    "CLAUDE_CODEX_GATEWAY_READ_RETRY_MAX_ESCALATIONS", default=3)
+                _cap = max_output_tokens
+                _recovered = False
+                for _esc in range(1, _max_escalations + 1):
+                    _bigger = retry_cap_for_empty(_cap, True, True)
+                    # final escalation drops the cap entirely (the proven 0% case);
+                    # 0 is the "explicitly uncapped" sentinel for _attempt.
+                    _override = _bigger if _esc < _max_escalations else 0
                     gateway_trace("reasonix_acp_uncap_retry", model=model,
-                                  attempt=attempt, new_cap=_bigger)
-                    _r2 = _attempt(cap_override=_bigger)
+                                  attempt=attempt, escalation=_esc, new_cap=_override)
+                    _r2 = _attempt(cap_override=_override)
                     if str(_r2[0]).strip():
                         return _r2
                     last_result = _r2
+                    if _override == 0:
+                        break  # already uncapped; nothing higher to try
+                    _cap = _bigger
             if may_retry_empty and not str(result[0]).strip() and attempt < max_attempts:
                 gateway_trace("reasonix_acp_empty_retry", model=model, attempt=attempt)
                 last_result = result
