@@ -7,7 +7,7 @@
 
 - **A (read summary) is the only promoted lever.** Across 8 real-DeepSeek runs it passed every quality gate, dropped read-lane output, and held/raised cache. It is the right lever for both input reduction and the 99% cache target. **Promote: ON.**
 - **F (output discipline) was DROPPED after real-DeepSeek validation.** The earlier "−24.9% / promote" call was measured on the SYNTHETIC bench, where the edit lane is a forced StructuredOutput that never exercises F. On the real fan-out (24 runs: 16 F, 8 baseline), F (a) **raised** edit-lane output +43% avg (it makes the model emit a real diff instead of a one-line description — correct, but more output), and (b) nudged the heavy review lane's bad-lane rate to ~1% (3 bad lanes / 16 F runs vs 0 / 8 baseline). Net win unproven → **stays OFF** per measure-then-promote.
-- **C, B, E, D are built, byte-safe, and OFF** — workload-dependent, not proven positive.
+- **B, C, D, E were each validated on a dedicated real-world workload (2026-06-25) and ALL stay OFF** — each was run through an adversary-approved test that exercises its REAL trigger (not a stub). Result: only A wins on the real flash fan-out; B/C/D/E have working, byte-safe mechanisms but flash does not realize their benefit. See **"Per-lever real-world validation"** below.
 - **Honesty note:** the original promotion of F was an overclaim caused by a bench blind spot (the bench's edit lane can't exercise F). The real-DeepSeek run below is the correction. Nothing was actually turned on in production (the gateway defaults both F and A to OFF; no launcher exported their flags), so this correction lands before any production impact.
 
 See **"Real-DeepSeek correction (2026-06-25)"** below for the full data.
@@ -95,6 +95,36 @@ byte-stability, but its edit path was a blind spot. The fix is a free-form edit 
 The classifier-poisoning fix and A's reclassification fix (above) remain correct and
 necessary regardless of F's promotion — they are in the lane-classification path that
 A also depends on.
+
+## Per-lever real-world validation (2026-06-25)
+
+The user required EVERY lever validated on a real workload, not just F+A. An 8-agent
+design+adversary workflow first showed that ALL four initial test designs were FAKE
+measurements (the F-trap generalized: a lever measured on a lane type that stubs its
+trigger is UNMEASURED). After the adversary fixes — including two code additions
+(`_input_by_type`/`_input_rows_by_type` in the bench, and a per-process read-trace in
+the shim so E's ground truth is ACTUAL reads, not the model's invented `files_read`) —
+each lever ran on real reasonix+DeepSeek via `runtime/lever-real-validation.py`.
+
+| Lever | Real-DeepSeek result | Verdict |
+|---|---|---|
+| **A** read-summary | On 3 verbose free-form read lanes (off leg dumped 25,065 tok of prose), A cut read output to 1,338 (**−94.7%**), quality held (summaries name the right file + carry correct findings, verified on the FULL body), cache rose 72.9→82.3. Cap-only leg (1,536) vs full A (1,338) confirms BOTH layers work (hard 512 cap does most; soft JSON layer adds a bit). | ✅ **ON** — validated end-to-end, both layers |
+| **B** read-isolated | Free-choice lane over a 36 KiB file (under the engine's 64 KiB outline threshold, so raw `read_file` returns full content — the case B is meant to prevent). Read-trace over 5 paired runs: **adoption 0/5** — flash NEVER chose `read_file_isolated`, always plain `read_file`. Median parent input ON vs OFF: 22,404 vs 22,116 (**+1.3%**, the extra tool spec). Mechanism sound; flash won't adopt it. | ❌ **OFF** — adoption 0 |
+| **C** read-cache | 8 lanes all forced to read the same 134 KiB file (quote-verbatim questions; baseline read verified, ~16K input each). Cache populated + byte-safe. Median input OFF 16,538 vs ON 16,247 (**−1.8%**, noise). Lanes need DIFFERENT specifics from the file, so a shared summary can't replace the re-read. | ❌ **OFF** — re-read not suppressed |
+| **D** pre-index | Built a REAL semantic index with `nomic-embed-text` (768-dim, `.reasonix/semantic/index.jsonl` 3.1 MB); `build_preindex` fail-opens correctly (0.1 s, never raises). But flash **never calls `semantic_search`** — even when explicitly invited it called `read_file` on the 134 KiB file 5× and looped. Control with PREINDEX OFF hung identically → the loop/hang is flash behavior, NOT D; D is harmless but unused by flash. | ❌ **OFF** — flash won't use the index |
+| **E** prefetch | Precision/recall computed against the shim read-trace (ACTUAL reads, not the model's self-reported `files_read`, which is invented). Pooled **precision 1.00** (3/3 — a predicted path is always really read) but **recall 0.30** (3/10 — the predictor's literal-path regex misses every runtime-discovered file; two no-named-file lanes predicted ∅ but read 3–4 files each). Adversary bar for building inject: precision ≥0.90 AND recall ≥0.60 → recall fails. Inject would prefetch ~30% of needed files while every miss adds dead bytes to the shared prefix → net-negative. | ❌ **OFF** — advisory & inject both not worth it |
+
+**The one-line truth:** on a real flash fan-out, **only A realizes its benefit**. B/C/D/E all have
+correct, byte-safe mechanisms, but flash either won't adopt the tool (B, D), or the
+workload shape doesn't let the cache/prefetch help (C, E). This is exactly why
+measure-then-promote exists — without these real runs, all four would have been
+promoted on plausible-but-fake bench numbers, like F was.
+
+**Test infrastructure (kept):** `runtime/lever-real-validation.py` (A|B|C|D|E, each its
+adversary-approved workload), `_input_by_type`/`_input_rows_by_type` in the bench, and
+the shim `REASONIX_READ_TRACE_DIR` read-trace (off by default, byte-inert — observes the
+tool dispatch chokepoint only, never touches specs/prefix). Re-promote any lever only by
+re-running its validator and clearing its stated bar.
 
 ## What's promoted, what's available
 

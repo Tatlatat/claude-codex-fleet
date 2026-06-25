@@ -135,6 +135,38 @@ let stats = null;
 try {
   // Full code toolset (file/shell/semantic-search) so lanes match the old acp.
   const toolset = await buildCodeToolset({ rootDir });
+
+  // --- TEST-ONLY read trace (Lever E ground truth) --------------------------
+  // When REASONIX_READ_TRACE_DIR is set, record every ACTUAL file read the lane
+  // performs to a PER-PROCESS sidecar (reads-<pid>.jsonl in that dir), one resolved
+  // path per line. Per-process because each fan-out lane is a fresh shim subprocess,
+  // so PID is a unique lane id and concurrent lanes never collide. This is the ONLY
+  // honest ground truth for E's recall: the shim returns just assistant_final.text,
+  // so a lane's intermediate read_file calls never reach the bench's SSE stream, and
+  // the model's self-reported `files_read` is invented (the F-trap). We observe the
+  // single tool dispatch chokepoint — specs()/prefix/toolSpecs are UNTOUCHED, so the
+  // cached prefix is byte-identical and this is inert to cache. Off by default.
+  const _readTraceDir = process.env.REASONIX_READ_TRACE_DIR;
+  if (_readTraceDir) {
+    const { appendFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const _traceFile = join(_readTraceDir, `reads-${process.pid}.jsonl`);
+    const _origDispatch = toolset.tools.dispatch.bind(toolset.tools);
+    toolset.tools.dispatch = async (name, argumentsRaw, opts = {}) => {
+      if (name === "read_file" || name === "read_file_isolated") {
+        try {
+          const a = typeof argumentsRaw === "string"
+            ? (argumentsRaw.trim() ? JSON.parse(argumentsRaw) : {})
+            : (argumentsRaw || {});
+          const p = a.path ?? a.file ?? a.filename ?? a.target ?? "";
+          if (p) appendFileSync(_traceFile, JSON.stringify({ tool: name, path: String(p), prompt: String(req.prompt ?? "").slice(0, 60) }) + "\n");
+        } catch { /* tracing must never break a lane */ }
+      }
+      return _origDispatch(name, argumentsRaw, opts);
+    };
+  }
+  // --------------------------------------------------------------------------
+
   const client = new DeepSeekClient({ apiKey, baseUrl });
   // Prefix system text: when the caller doesn't supply one, build the SAME code
   // system prompt the old `reasonix acp` path used (acp.ts builds

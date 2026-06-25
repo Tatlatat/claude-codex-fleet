@@ -582,6 +582,28 @@ def _output_by_type(window) -> dict:
     return out
 
 
+def _input_by_type(window) -> dict:
+    """INPUT-token sum split by lane_type — the B/C signal. Levers B (read-isolation)
+    and C (shared read-cache) cut the INPUT a read lane ingests, not its output, so
+    the read-lane INPUT sum is their headline. Added per the lever-validation adversary:
+    ledger_window only returns cache aggregates, _output_by_type only sums output —
+    there was no per-type INPUT helper, so any 'B/C cut input' claim was unmeasurable."""
+    out: dict = {}
+    for r in _ledger_rows(window):
+        lt = r.get("lane_type") or "unknown"
+        out[lt] = out.get(lt, 0) + int(r.get("input_tokens") or 0)
+    return out
+
+
+def _input_rows_by_type(window, lane_type: str) -> list[int]:
+    """Per-lane INPUT tokens for one lane_type, as a list (so the diag can report the
+    DISTRIBUTION + median, not just a sum — the adversary required counterbalanced,
+    per-lane comparison for C/B so stochastic read/no-read variance is separable)."""
+    return [int(r.get("input_tokens") or 0)
+            for r in _ledger_rows(window)
+            if (r.get("lane_type") or "unknown") == lane_type]
+
+
 # --- Printing ------------------------------------------------------------------
 _HEADER = ("config", "lanes", "cache_w%", "cache_med%", "in_tok", "out_tok",
            "read_out", "edit_out", "est_cost", "quality")
