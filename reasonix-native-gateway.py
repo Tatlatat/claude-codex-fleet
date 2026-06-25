@@ -969,6 +969,13 @@ def call_openai_compatible(payload: JSON, requested_model: str, config: JSON) ->
         _a_cap = read_summary_budget() if lane_type == "read" else None
         _caps = [c for c in (_f_cap, _a_cap) if c is not None]
         _max_out = min(_caps) if _caps else None
+        # Lever G (default off): reject lanes whose file scope is too broad.
+        _rej = overscope_rejection(lane_task_text(messages),
+                                   env_first("CLAUDE_REASONIX_GATEWAY_CWD",
+                                             "CLAUDE_CODEX_GATEWAY_CODEX_CWD",
+                                             default=os.getcwd()))
+        if _rej is not None:
+            return anthropic_end_turn_response(requested_model, None, text=_rej)
         text, usage = run_reasonix_acp(
             prompt, config, max_output_tokens=_max_out)
         # Lever C (default off): cache this lane's summary keyed by the file(s) it
@@ -1483,6 +1490,83 @@ def _tool_choice_forces(payload: JSON, tool_name: str) -> bool:
             not tool_name or name == tool_name
         )
     return False
+
+
+# ---------------------------------------------------------------------------
+# Lever G — reject-on-overscope (CLAUDE_REASONIX_GATEWAY_OVERSCOPE_REJECT,
+# default OFF). When on, the gateway refuses a lane whose declared file scope
+# is too large and returns a structured error telling the controller to
+# decompose into per-file lanes. Byte-inert when off.
+# ---------------------------------------------------------------------------
+
+_PREFETCH_PATH_RE = re.compile(
+    r"""(?<![\w./-])             # not mid-token
+        (                        # capture the path
+          (?:[\w./-]+/)?         # optional dir segments
+          [\w-]+                 # stem
+          \.(?:py|pyx|pyi|js|mjs|cjs|ts|tsx|jsx|md|json|jsonl|sh|bash|zsh|
+              txt|toml|yaml|yml|cfg|ini|rs|go|java|c|h|cpp|hpp|rb|php|sql|html|css)
+        )
+        (?![\w/])                # not followed by more path chars
+    """, re.VERBOSE)
+
+_OVERSCOPE_BULK_RE = re.compile(
+    r"\b(audit|review|scan|analyze|check|read)\s+(the\s+)?(whole|entire|full)\s+(codebase|repo|repository|project)\b"
+    r"|\ball\s+files?\s+(in|under|across)\b|\bevery\s+file\b|\bthe\s+whole\s+(repo|codebase)\b",
+    re.I)
+
+
+def _overscope_on() -> bool:
+    return env_truthy("CLAUDE_REASONIX_GATEWAY_OVERSCOPE_REJECT",
+                      os.getenv("CLAUDE_CODEX_GATEWAY_OVERSCOPE_REJECT", "0"))
+
+
+def _overscope_max_files() -> int:
+    return env_int("CLAUDE_REASONIX_GATEWAY_OVERSCOPE_MAX_FILES",
+                   "CLAUDE_CODEX_GATEWAY_OVERSCOPE_MAX_FILES", default=10)
+
+
+def lane_file_scope_count(task_text: str, cwd: str | None) -> int:
+    """Count DISTINCT existing files the task text literally names under cwd (the same
+    exists-under-cwd resolve as predict_prefetch_files, copied so the gateway is
+    standalone). A token that does not resolve to a real file is not counted."""
+    if not task_text or not cwd:
+        return 0
+    try:
+        base = Path(cwd).expanduser().resolve()
+    except Exception:
+        return 0
+    seen: set[str] = set()
+    for match in _PREFETCH_PATH_RE.finditer(task_text):
+        token = match.group(1)
+        candidate = (base / token) if not os.path.isabs(token) else Path(token)
+        try:
+            resolved = candidate.expanduser().resolve()
+        except Exception:
+            continue
+        if resolved.is_file():
+            seen.add(str(resolved))
+    return len(seen)
+
+
+def overscope_rejection(task_text: str, cwd: str | None) -> str | None:
+    """None unless OVERSCOPE_REJECT is on AND the lane is over-broad (a bulk
+    non-enumerable scope phrase, OR > max-files distinct named files). When it fires,
+    returns a structured error telling the controller to decompose into per-file lanes."""
+    if not _overscope_on():
+        return None
+    pt = task_text or ""
+    bulk = bool(_OVERSCOPE_BULK_RE.search(pt))
+    n = lane_file_scope_count(pt, cwd)
+    if not bulk and n <= _overscope_max_files():
+        return None
+    reason = ("a bulk codebase/directory scope" if bulk
+              else f"{n} named files (> {_overscope_max_files()})")
+    return ("LANE REJECTED (overscope): this lane covers " + reason + ". A single DeepSeek-flash "
+            "lane that ingests many files balloons input tokens and collapses cache (measured: one "
+            "833-file lane = 532K tokens, 75% cache, 18 min). DECOMPOSE: emit one lane per file / "
+            "module / focused question via parallel(), then one synthesize lane. Re-dispatch as "
+            "narrow lanes.")
 
 
 def openai_messages_to_prompt(messages: list[JSON], tools: Any = None) -> str:
@@ -2215,6 +2299,22 @@ def call_openai_chat_completion(payload: JSON, requested_model: str, config: JSO
         _a_cap = read_summary_budget() if lane_type == "read" else None
         _caps = [c for c in (_f_cap, _a_cap) if c is not None]
         _max_out = min(_caps) if _caps else None
+        # Lever G (default off): reject lanes whose file scope is too broad.
+        _rej = overscope_rejection(lane_task_text(normalized),
+                                   env_first("CLAUDE_REASONIX_GATEWAY_CWD",
+                                             "CLAUDE_CODEX_GATEWAY_CODEX_CWD",
+                                             default=os.getcwd()))
+        if _rej is not None:
+            return {
+                "id": f"chatcmpl_{uuid4().hex}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": requested_model,
+                "choices": [{"index": 0,
+                              "message": {"role": "assistant", "content": _rej},
+                              "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }
         text, usage = run_reasonix_acp(
             prompt, config, max_output_tokens=_max_out)
         # Lever C (default off): populate the shared read-cache from this lane's
