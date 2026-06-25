@@ -1204,6 +1204,18 @@ _EDIT_INTENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Broadened read verbs — only active when CLAUDE_REASONIX_GATEWAY_READER_BROADEN=1.
+# Synthesis and edit are checked BEFORE this in classify_lane_type, so they always
+# win ties ("review and merge" → synthesize, "review and refactor" → edit).
+_READER_BROADEN_RE = re.compile(
+    r"\b(analyze|analyse|review|examine|investigate|audit|inspect|study|trace|explain|summari[sz]e|find\b|walk through|describe what)\b",
+    re.I)
+
+
+def _reader_broaden_on() -> bool:
+    return env_truthy("CLAUDE_REASONIX_GATEWAY_READER_BROADEN",
+                      os.getenv("CLAUDE_CODEX_GATEWAY_READER_BROADEN", "0"))
+
 
 def lane_task_text(messages: Any) -> str:
     """The lane's RAW task text — the user/system message content BEFORE the gateway
@@ -1238,6 +1250,8 @@ def classify_lane_type(tools: Any, prompt_text: str | None) -> str:
     if _EDIT_INTENT_RE.search(pt):
         return "edit"
     if _READER_INTENT_RE.search(pt):
+        return "read"
+    if _reader_broaden_on() and _READER_BROADEN_RE.search(pt):
         return "read"
     return "unknown"
 
