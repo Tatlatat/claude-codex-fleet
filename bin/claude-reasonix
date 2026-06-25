@@ -58,13 +58,17 @@ if [[ "$CLAUDE_REASONIX_FLAVOR" == "reasonix" ]]; then
   : "${CLAUDE_REASONIX_GATEWAY_READ_RETRY_HOLLOW:=1}"
   export CLAUDE_REASONIX_GATEWAY_READ_SUMMARY CLAUDE_REASONIX_GATEWAY_READER_BROADEN
   export CLAUDE_REASONIX_GATEWAY_READ_RETRY_HOLLOW
-  # STABILITY (sub-project A) — A3 marker on by default (strictly safer: a timed-out
-  # lane surfaces UNVERIFIED instead of a bare error). A1a outline-threshold + A2
-  # overscope-reject ship OFF here pending the vatlieu-kho audit measurement (must show
-  # timeouts gone AND token/cache not regressed AND precision held before flipping on).
+  # STABILITY (sub-project A) — all three ON by default, MEASURED on the vatlieu-kho
+  # audit A/B (2026-06-25): vs OFF, A1a(14KiB)+A2 gave cost -40%, output -41%, cache
+  # 91.7%->95.6% (+3.9pt), timeout 1->0, and NO precision loss (the confirmed-count
+  # drop was verify-lane flash variance routed to 'unverified', not A1a; 0 findings
+  # lost). A3 marker is strictly safer (a timed-out lane surfaces UNVERIFIED, not a
+  # bare error). A1a outline-threshold = 14336 (14 KiB): files larger summarize to an
+  # outline instead of dumping raw — the mechanical fix for lanes that read big files
+  # and time out. Defaults overridable: set any to 0 to disable.
   : "${CLAUDE_REASONIX_GATEWAY_LANE_FAIL_MARKER:=1}"
-  : "${CLAUDE_REASONIX_GATEWAY_OVERSCOPE_REJECT:=0}"
-  : "${REASONIX_LANE_OUTLINE_THRESHOLD_BYTES:=0}"
+  : "${CLAUDE_REASONIX_GATEWAY_OVERSCOPE_REJECT:=1}"
+  : "${REASONIX_LANE_OUTLINE_THRESHOLD_BYTES:=14336}"
   export CLAUDE_REASONIX_GATEWAY_LANE_FAIL_MARKER CLAUDE_REASONIX_GATEWAY_OVERSCOPE_REJECT REASONIX_LANE_OUTLINE_THRESHOLD_BYTES
   # The engine is the owner's fork, bundled in-process and driven via the one-shot
   # Node shim engine/run-lane.mjs (NO upstream reasonix subprocess). The gateway
