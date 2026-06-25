@@ -1511,10 +1511,15 @@ _PREFETCH_PATH_RE = re.compile(
     """, re.VERBOSE)
 
 _OVERSCOPE_BULK_RE = re.compile(
-    # verb + (optional whole/entire/full) + codebase/repo/project — the qualifier is
-    # OPTIONAL so bare "audit the codebase" (the most common 833-file phrasing) fires.
-    r"\b(audit|review|scan|analyze|examine|inspect|check|read|go through|look at)\s+"
+    # strong bulk verb + (optional whole/entire/full) + codebase/repo/project, where
+    # the scope noun is at a phrase boundary (NOT followed by another noun like README/
+    # plan/layout — "review the project plan in x.md" is a narrow lane, must NOT fire).
+    # The qualifier is OPTIONAL so bare "audit the codebase" (the common 833-file shape)
+    # still fires. Weak verbs (read/check/look-at) are excluded here: "read the project
+    # README" is narrow; only audit/scan/analyze-style verbs imply whole-tree ingestion.
+    r"\b(audit|scan|analyze|examine|inspect|go through)\s+"
     r"(the\s+)?(whole\s+|entire\s+|full\s+)?(codebase|repo|repository|project)\b"
+    r"(?!\s+\w*(readme|plan|layout|file|doc|spec|config|structure))"
     # "all files in/under/across", "all (the) source files", "every file"
     r"|\ball\s+(the\s+)?(source\s+)?files?\b"
     r"|\bevery\s+(source\s+)?file\b"

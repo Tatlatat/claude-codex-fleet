@@ -31,9 +31,12 @@ def main():
                  "look at everything in src/", "go through the whole repo",
                  "analyze the project for issues"):
         chk(isinstance(gw.overscope_rejection(bulk, CWD), str), f"ON: bulk '{bulk}' -> reject")
-    # ON: legit narrow lanes must NOT be rejected (false-positive guard)
+    # ON: legit narrow lanes must NOT be rejected (false-positive guard) — incl. the
+    # "<verb> the project <noun>" borderline that a bare project-scope regex would steal.
     for narrow in ("read src/auth.py and check it", "analyze the auth module in src/auth.py",
-                   "fix the bug in handler.py", "explain the prime gate logic"):
+                   "fix the bug in handler.py", "explain the prime gate logic",
+                   "read the project README", "read the project README.md and summarize",
+                   "review the project plan in docs/x.md", "check the project layout"):
         chk(gw.overscope_rejection(narrow, CWD) is None, f"ON: narrow '{narrow}' -> None (no false reject)")
     # ON: >N explicit existing files -> rejection (build a prompt naming 11 real files)
     import glob
