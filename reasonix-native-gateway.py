@@ -1200,7 +1200,7 @@ _READER_INTENT_RE = re.compile(
 
 
 _EDIT_INTENT_RE = re.compile(
-    r"\b(edit|write|create|modify|apply|patch|implement|add|delete|rename|refactor)\b",
+    r"\b(edit|write|create|modify|apply|patch|implement|add|delete|rename|refactor|replace|fix|optimize|update|change|remove|insert)\b",
     re.IGNORECASE,
 )
 
@@ -1367,7 +1367,7 @@ def output_discipline_directive() -> str:
         "- Be terse. No narration ('I will now…', 'Let me…', 'Sure, here is…'), "
         "no restating or summarizing the task, no chain-of-thought prose. Lead "
         "with the answer.\n"
-        "- For code changes: emit a MINIMAL unified diff / SEARCH-REPLACE block "
+        "- For code changes: emit a MINIMAL unified diff (a find/swap block) "
         "ONLY. Do NOT reprint unchanged code, do NOT leave placeholder comments "
         "like '// rest unchanged' or '# ... existing code ...'. Show only the "
         "lines that differ, with just enough context to locate them."
