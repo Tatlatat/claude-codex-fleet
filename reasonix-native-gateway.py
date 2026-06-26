@@ -1340,8 +1340,14 @@ def classify_lane_type(tools: Any, prompt_text: str | None) -> str:
     Order matters: synthesize is checked first (heavy-synthesis OR synthesis-intent),
     then edit (checked BEFORE read so 'modify and summarize' → edit, never capped as
     read), then read, then unknown.
+
+    The gateway-injected PREFIX_GUIDE cache-advice is stripped first (see
+    _strip_injected_guide): its prose carries edit-verbs ("build ONE fixed shared
+    block", "crams everything") that would otherwise flip a read lane to 'edit' and
+    silently disable Lever A's read-summary cap. Classify the lane's TASK, not the
+    advice. No-op (byte-identical) when no guide marker is present.
     """
-    pt = prompt_text or ""
+    pt = _strip_injected_guide(prompt_text or "")
     if is_heavy_synthesis(tools, len(pt), pt):
         return "synthesize"
     if _SYNTHESIS_INTENT_RE.search(pt):
@@ -1654,13 +1660,48 @@ def lane_file_scope_count(task_text: str, cwd: str | None) -> int:
     return len(seen)
 
 
+# Stable opening marker of the gateway-injected PREFIX_GUIDE advisory (hooks/
+# reasonix-workflow.py PREFIX_GUIDE_TEXT) and its closing sentence. The guide is
+# CACHE ADVICE appended to a Workflow's additionalContext — it is NOT the lane's
+# task, but it contains scope words ("the full text of every file under review",
+# "crams everything into one context") that would otherwise trip the bulk-scope
+# classifier and reject EVERY lane. Scope classification must run on the real task,
+# so we strip this contiguous advisory block before classifying.
+_GUIDE_OPEN_MARKER = "PROMPT-CACHE NOTE for this Dynamic Workflow:"
+_GUIDE_CLOSE_MARKER = "This is advisory — correctness first"
+
+
+def _strip_injected_guide(text: str) -> str:
+    """Remove the gateway-injected PREFIX_GUIDE advisory block from `text` so scope
+    classification keys off the lane's actual task, not the cache-advice. The guide is
+    a contiguous block from `_GUIDE_OPEN_MARKER` to the end of its closing sentence;
+    the real task text comes before and/or after it. If the open marker is absent this
+    is a no-op (byte-identical), so non-workflow lanes are unaffected."""
+    if not text or _GUIDE_OPEN_MARKER not in text:
+        return text
+    start = text.find(_GUIDE_OPEN_MARKER)
+    close = text.find(_GUIDE_CLOSE_MARKER, start)
+    if close != -1:
+        # cut through the end of the closing sentence (to the next newline or EOS)
+        eol = text.find("\n", close)
+        end = len(text) if eol == -1 else eol
+    else:
+        # closer missing (truncated guide) — drop to end of text; the guide is always
+        # appended LAST, so everything from the marker on is advisory.
+        end = len(text)
+    return (text[:start] + text[end:]).strip()
+
+
 def overscope_rejection(task_text: str, cwd: str | None) -> str | None:
     """None unless OVERSCOPE_REJECT is on AND the lane is over-broad (a bulk
     non-enumerable scope phrase, OR > max-files distinct named files). When it fires,
     returns a structured error telling the controller to decompose into per-file lanes."""
     if not _overscope_on():
         return None
-    pt = task_text or ""
+    # Classify the LANE TASK, not the gateway-injected cache-advice (see
+    # _strip_injected_guide): the guide's "every file under review" / "everything in
+    # one context" phrases would otherwise reject every lane as bulk scope.
+    pt = _strip_injected_guide(task_text or "")
     bulk = bool(_OVERSCOPE_BULK_RE.search(pt))
     n = lane_file_scope_count(pt, cwd)
     if not bulk and n <= _overscope_max_files():
