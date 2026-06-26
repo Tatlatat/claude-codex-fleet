@@ -287,4 +287,5 @@ process.stdout.write(
     },
     cost_usd: stats?.cost ?? 0,
   }) + "\n",
+  () => process.exit(0), // flush-then-exit: avoids dangling-handle hang from lingering keep-alive sockets (Gap-2)
 );
